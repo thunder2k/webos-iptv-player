@@ -232,9 +232,9 @@ export class SpatialNav {
         });
       } catch {
         // Chromium 38 (webOS 3.9) rejects an options object passed to the
-        // native scrollIntoView; the polyfill doesn't install because
-        // style.scrollBehavior reports as a string ('') on that engine.
-        // Focus is already recorded above; skipping scroll is safe.
+        // native scrollIntoView; the scrollIntoView polyfill installs on that
+        // engine and handles options instead. Focus is already recorded above;
+        // skipping scroll is safe if the fallback is not active.
       }
     } else {
       this.lastScrollFocusAt = 0;

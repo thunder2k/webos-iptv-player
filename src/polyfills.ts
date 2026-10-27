@@ -76,16 +76,39 @@ function installScrollIntoViewOptions(): void {
   if (
     typeof document === 'undefined'
     || typeof Element === 'undefined'
-    || typeof document.documentElement.style.scrollBehavior === 'string'
   ) return;
+
+  // Chromium 38 (webOS 3.9) does not support scrollBehavior in scrollIntoView;
+  // it treats scrollIntoView(options) as scrollIntoView(true). CSSOM stores any
+  // value assigned to style.scrollBehavior, so reading it back cannot detect
+  // support. Use CSS.supports when available; when unavailable (Chromium 38) or
+  // when scrollBehavior is not recognized as a CSS property (value is undefined
+  // rather than ''), assume options are not supported and install the polyfill.
+  let optionsSupported = false;
+  if (
+    typeof CSS !== 'undefined'
+    && typeof CSS.supports === 'function'
+  ) {
+    optionsSupported = CSS.supports('scroll-behavior', 'smooth');
+  }
+  if (
+    optionsSupported
+    && typeof document !== 'undefined'
+    && document.documentElement
+    && typeof document.documentElement.style.scrollBehavior === 'undefined'
+  ) {
+    optionsSupported = false;
+  }
+  if (optionsSupported) return;
 
   const nativeScrollIntoView = Element.prototype.scrollIntoView;
   Element.prototype.scrollIntoView = function (
     arg?: boolean | ScrollIntoViewOptions,
   ): void {
     if (typeof arg !== 'object' || arg === null) {
-      if (arg === undefined) nativeScrollIntoView.call(this);
-      else nativeScrollIntoView.call(this, arg);
+      if (typeof nativeScrollIntoView === 'function') {
+        nativeScrollIntoView.call(this, arg);
+      }
       return;
     }
     scrollIntoViewFallback(this, arg);
