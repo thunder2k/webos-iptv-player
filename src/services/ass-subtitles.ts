@@ -1,6 +1,7 @@
 import type { SidecarSubtitle } from '../types';
 import { fetchText } from '../utils/fetch-helper';
 import { createLogger } from '../utils/logger';
+import ASS from 'assjs';
 
 const log = createLogger('AssSubs');
 
@@ -58,10 +59,9 @@ export class AssSubtitles {
     if (!sidecar || !video) return;
     const gen = ++this.gen;
     try {
-      const [{ default: ASS }, content] = await Promise.all([
-        import('assjs'),
-        sidecar.text != null ? Promise.resolve(sidecar.text) : fetchText(sidecar.url),
-      ]);
+      const content = sidecar.text != null
+        ? sidecar.text
+        : await fetchText(sidecar.url);
       if (gen !== this.gen) return; // a newer selection/stop landed mid-fetch
       const overlay = this.ensureOverlay();
       if (!overlay) return;

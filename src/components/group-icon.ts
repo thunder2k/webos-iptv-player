@@ -96,9 +96,9 @@ function fold(value: string): string {
   // Printable ASCII has nothing to fold but case; most catalog names are.
   if (/^[\x20-\x7e]*$/.test(value)) return value.toLowerCase();
   return stripDiacritics(value.normalize('NFD')) // accents + Arabic tashkeel/hamza/madda
-    .replace(/[آأإٱ]/gu, 'ا')        // آأإٱ -> ا
-    .replace(/ى/gu, 'ي')             // ى -> ي
-    .replace(/ة/gu, 'ه')             // ة -> ه
+    .replace(/[آأإٱ]/g, 'ا')        // آأإٱ -> ا
+    .replace(/ى/g, 'ي')             // ى -> ي
+    .replace(/ة/g, 'ه')             // ة -> ه
     .toLowerCase();
 }
 

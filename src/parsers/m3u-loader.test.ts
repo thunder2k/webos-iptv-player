@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchAndParseM3U, fetchAndParseM3UInWorker } from './m3u-loader';
+import {
+  fetchAndParseM3U,
+  fetchAndParseM3UInWorker,
+  supportsM3UWorker,
+} from './m3u-loader';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('fetchAndParseM3UInWorker', () => {
+  it('keeps M3U retrieval on the app page when legacy webOS lacks Response', () => {
+    vi.stubGlobal('Worker', class Worker {});
+    vi.stubGlobal('Response', undefined);
+
+    expect(supportsM3UWorker()).toBe(false);
+  });
+
   it('streams records and keeps only channels matched by the Live catalog', async () => {
     const source = [
       '#EXTM3U url-tvg="http://host/guide.xml"',
@@ -275,6 +286,75 @@ describe('fetchAndParseM3UInWorker', () => {
 
     expect(result.data.channels.map(channel => channel.name)).toEqual(['Alpha']);
     expect(result.data.channels[0].url).toBe('http://host/a');
+  });
+
+  it('loads a legacy text-only fetch response when streaming is unavailable', async () => {
+    const source = [
+      '#EXTM3U',
+      '#EXTINF:-1 group-title="News",Alpha',
+      'http://host/a',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => source,
+    })));
+
+    const result = await fetchAndParseM3UInWorker({
+      url: 'http://host/list.m3u',
+      timeout: 5000,
+    });
+
+    expect(result.data.channels.map(channel => channel.name)).toEqual(['Alpha']);
+    expect(result.data.channels[0].group).toBe('News');
+    expect(result.metrics).toMatchObject({
+      transport: 'text',
+      channelsKept: 1,
+    });
+  });
+
+  it('uses a plain fetch request for a legacy text response', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => '#EXTM3U\n#EXTINF:-1,Alpha\nhttp://host/a',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchAndParseM3UInWorker({
+      url: 'http://host/list.m3u',
+      timeout: 5000,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('http://host/list.m3u');
+  });
+
+  it('keeps M3U VOD and series entries out of the live catalog', async () => {
+    const source = [
+      '#EXTM3U',
+      '#EXTINF:-1 group-title="Live",Alpha',
+      'http://host/live/a',
+      '#EXTINF:-1 group-title="Movies",Bravo',
+      'http://host/movie/b',
+      '#EXTINF:-1 group-title="Drama",Season 1',
+      'http://host/series/c',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => source,
+    })));
+
+    const result = await fetchAndParseM3UInWorker({
+      url: 'http://host/list.m3u',
+      timeout: 5000,
+    });
+
+    expect(result.data.channels.map(channel => channel.name)).toEqual(['Alpha']);
+    expect(result.metrics.channelsDropped).toBe(2);
   });
 
   it('reports structured fetch failures without including the source URL', async () => {

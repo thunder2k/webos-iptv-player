@@ -22,6 +22,10 @@ export const CONFIG = {
   DEFAULT_PLAYLIST_REFRESH_INTERVAL_MS: 6 * 60 * 60 * 1000,
   WORKER_IDLE_TERMINATION_MS: 1000,
   PLAYLIST_CACHE_WRITE_DELAY_MS: 1200,
+  // A mixed M3U can contain an entire VOD library. The Live screen retains
+  // only live entries, and this ceiling keeps a malformed or giant source
+  // from exhausting the memory available on older TVs.
+  M3U_MAX_LIVE_ENTRIES: 20_000,
   DEFAULT_EPG_REFRESH_INTERVAL_MS: 6 * 60 * 60 * 1000,
   REMINDER_SCAN_INTERVAL: 30 * 1000,
   CHANNEL_SCROLLBAR_HIDE_MS: 900,

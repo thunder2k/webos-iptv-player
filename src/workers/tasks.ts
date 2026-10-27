@@ -20,7 +20,7 @@ export interface M3UWorkerRequest {
 export interface M3UWorkerResponse {
   data: ParsedPlaylist;
   metrics: {
-    transport: 'stream' | 'array_buffer';
+    transport: 'stream' | 'array_buffer' | 'text';
     filter: 'none' | 'unavailable' | 'live_catalog';
     inputBytes: number;
     chunks: number;

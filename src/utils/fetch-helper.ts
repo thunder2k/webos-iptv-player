@@ -1,3 +1,17 @@
+import { gunzipSync } from 'fflate';
+import { fetchViaLuna, fetchViaLunaText } from './luna-fetch';
+
+// On webOS 3.9 / Chromium 38, `fetch` may exist as a function but throw
+// "undefined is not a function" when called. AbortSignal.prototype.addEventListener
+// is undefined on this platform, which is a reliable indicator of Chromium 38.
+// When fetch is broken, route through fetchViaLuna (bundled service via Luna).
+/* eslint-disable compat/compat */
+export const supportsFetch =
+  typeof fetch !== 'undefined' &&
+  typeof AbortSignal !== 'undefined' &&
+  typeof AbortSignal.prototype.addEventListener === 'function';
+/* eslint-enable compat/compat */
+
 export type FetchTextErrorCode =
   | 'aborted'
   | 'timeout'
@@ -26,29 +40,54 @@ export async function fetchWithTimeout(
   options: RequestInit = {},
   timeout = 30000
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+  if (!supportsFetch) {
+    // webOS 3.9 has no fetch or XMLHttpRequest — route through the bundled
+    // service's Node.js HTTP client via Luna.
+    return fetchViaLuna(url, timeout) as unknown as Response;
+  }
+  const controller = createAbortController();
+  const timer = setTimeout(() => controller?.abort(), timeout);
 
+  let response: Response;
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    return response;
+    response = await fetch(url, withAbortSignal(options, controller));
+  } catch {
+    // Chromium 38 does not support the `signal` option on fetch(); retry without it
+    response = await fetch(url, options);
   } finally {
     clearTimeout(timer);
   }
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  return response;
 }
 
 export async function fetchText(url: string, timeout = 30000): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+  if (!supportsFetch) {
+    return fetchViaLunaText(url, timeout);
+  }
+  const controller = createAbortController();
+  const timer = setTimeout(() => controller?.abort(), timeout);
 
+  let response: Response;
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    return await response.text();
+    response = await fetch(url, withAbortSignal({}, controller));
+  } catch {
+    // Chromium 38 does not support the `signal` option on fetch(); retry without it
+    response = await fetch(url);
   } finally {
     clearTimeout(timer);
   }
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  return await response.text();
+}
+
+
+function createAbortController(): AbortController | null {
+  return typeof AbortController === 'function' ? new AbortController() : null;
+}
+
+function withAbortSignal(options: RequestInit, controller: AbortController | null): RequestInit {
+  return controller ? { ...options, signal: controller.signal } : options;
 }
 
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
@@ -87,16 +126,44 @@ export async function fetchLimitedText(
   signal?: AbortSignal,
   requiredPrefix?: string | readonly string[] | FetchPrefixValidator,
 ): Promise<string> {
-  const controller = new AbortController();
+  if (!supportsFetch) {
+    // webOS 3.9 has no fetch — route through the bundled service via Luna.
+    // No streaming/abort is possible, so fetch the full text then validate.
+    const text = await fetchViaLunaText(url, timeout);
+    if (text.length > maxBytes) {
+      throw new FetchTextError('too_large', `Response exceeds ${maxBytes} bytes`);
+    }
+    const validator = typeof requiredPrefix === 'function' ? requiredPrefix : null;
+    const prefixes: readonly string[] = typeof requiredPrefix === 'string'
+      ? [requiredPrefix]
+      : requiredPrefix === undefined || typeof requiredPrefix === 'function'
+        ? []
+        : requiredPrefix;
+    if (validator || prefixes.length > 0) {
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode(text);
+      const verdict = validator
+        ? validator(bytes, true)
+        : matchPrefixes(Array.from(bytes), prefixes);
+      if (verdict !== 'match') throw new FetchTextError(
+        'invalid_content',
+        validator ? 'Response has an invalid opening'
+          : `Response does not begin with ${prefixes.join(' or ')}`,
+      );
+    }
+    return text;
+  }
+
+  const controller = createAbortController();
   let timedOut = false;
-  const abort = () => controller.abort();
+  const abort = () => controller?.abort();
   const onTimeout = () => {
     timedOut = true;
-    controller.abort();
+    controller?.abort();
   };
   const timer = setTimeout(onTimeout, timeout);
   if (signal?.aborted) abort();
-  else signal?.addEventListener('abort', abort);
+  else signal?.addEventListener?.('abort', abort);
 
   const validator = typeof requiredPrefix === 'function' ? requiredPrefix : null;
   const prefixes: readonly string[] = typeof requiredPrefix === 'string'
@@ -121,23 +188,47 @@ export async function fetchLimitedText(
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let complete = false;
+  let response: Response;
+  let firstFetchError: unknown;
   try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new FetchTextError('http', `HTTP ${response.status}: ${response.statusText}`);
+    response = await fetch(url, withAbortSignal({}, controller));
+  } catch (firstErr) {
+    firstFetchError = firstErr;
+    // Chromium 38 does not support the `signal` option on fetch(); retry without it
+    try {
+      response = await fetch(url);
+    } catch (retryErr) {
+      if (typeof window !== 'undefined') (window as any).__debugFetchRetryError = String(retryErr);
+      if (typeof window !== 'undefined') (window as any).__debugFetchFirstError = String(firstFetchError);
+      throw retryErr;
     }
-    const declaredLength = Number(response.headers?.get('content-length') || 0);
-    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-      throw new FetchTextError('too_large', `Response exceeds ${maxBytes} bytes`);
-    }
+  }
+  if (!response.ok) {
+    throw new FetchTextError('http', `HTTP ${response.status}: ${response.statusText}`);
+  }
+  const declaredLength = Number(response.headers?.get('content-length') || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new FetchTextError('too_large', `Response exceeds ${maxBytes} bytes`);
+  }
+  try {
     reader = typeof response.body?.getReader === 'function'
       ? response.body.getReader()
       : null;
     if (!reader) {
-      throw new FetchTextError(
-        'too_large',
-        'Response size cannot be bounded without a stream reader',
-      );
+      // Non-streaming fallback (Chromium 38 has no ReadableStream). Load the
+      // full response, then validate size and prefix.
+      const fullText = await response.text();
+      if (fullText.length > maxBytes) {
+        throw new FetchTextError('too_large', `Response exceeds ${maxBytes} bytes`);
+      }
+      if (hasPrefixCheck && !validator) {
+        let matched = false;
+        for (const prefix of prefixes) {
+          if (fullText.startsWith(prefix)) { matched = true; break; }
+        }
+        if (!matched) throw prefixError();
+      }
+      return fullText;
     }
 
     const chunks: Uint8Array[] = [];
@@ -183,16 +274,18 @@ export async function fetchLimitedText(
   } finally {
     if (reader && !complete) void reader.cancel().catch(() => {});
     clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
+    signal?.removeEventListener?.('abort', abort);
   }
 }
 
 export async function fetchMaybeGzipText(url: string, timeout = 30000): Promise<string> {
+  if (!supportsFetch) {
+    return fetchViaLunaText(url, timeout);
+  }
   const response = await fetchWithTimeout(url, {}, timeout);
   let bytes = new Uint8Array(await response.arrayBuffer());
 
   if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-    const { gunzipSync } = await import('fflate');
     bytes = gunzipSync(bytes);
   }
 
@@ -205,6 +298,9 @@ export async function fetchWithRetry(
   retries = 2,
   timeout = 30000
 ): Promise<Response> {
+  if (typeof fetch === 'undefined') {
+    return fetchViaLuna(url, timeout) as unknown as Response;
+  }
   let lastError: Error | undefined;
   for (let i = 0; i <= retries; i++) {
     try {

@@ -147,7 +147,8 @@
 .detail-btn {
   display: inline-flex; align-items: center; gap: 10px;
   padding: 14px 20px; border-radius: 10px; border: 3px solid transparent;
-  background: var(--catalog-control); color: var(--text-primary); font-size: 24px; font-weight: 600;
+  background: #23262f; color: #e8e8e8; font-size: 24px; font-weight: 600;
+  background: var(--catalog-control); color: var(--text-primary);
   white-space: nowrap; cursor: pointer;
 }
 .detail-btn-primary { background: var(--accent, #3ea6ff); color: #fff; }
@@ -172,10 +173,17 @@
 .series-seasons { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 24px; }
 .series-season-btn {
   padding: 12px 28px; border-radius: 10px; border: 3px solid transparent;
-  background: var(--catalog-control); color: var(--text-primary); font-size: 26px; font-weight: 600; cursor: pointer;
+  background: #23262f; color: #e8e8e8; font-size: 26px; font-weight: 600; cursor: pointer;
+  background: var(--catalog-control); color: var(--text-primary);
 }
-.series-season-btn.active { background: var(--accent, #3ea6ff); color: #fff; }
-.series-season-btn.focused { border-color: var(--text-primary); }
+.series-season-btn.active {
+  background: #00d4ff; color: #fff;
+  background: var(--accent);
+}
+.series-season-btn.focused {
+  border-color: #e8e8e8;
+  border-color: var(--text-primary);
+}
 
 .series-episodes { position: relative; overflow-anchor: none; }
 .series-episodes-spacer { position: relative; width: 100%; }

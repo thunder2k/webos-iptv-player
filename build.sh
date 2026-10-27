@@ -24,8 +24,8 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
-# Lint (webOS 4 / Chromium 53 compat gate), then build (type-check + bundle)
-info "Linting (webOS 4 / Chromium 53 compat gate)..."
+# Lint (webOS 3.9 / Chromium 38 compat gate), then build (type-check + bundle)
+info "Linting (webOS 3.9 / Chromium 38 compat gate)..."
 npm run lint
 
 info "Building app (type-check + esbuild bundle)..."
@@ -37,10 +37,15 @@ rm -rf build/bundled-service
 npx tsc -p bundled-service/tsconfig.json
 node scripts/service-compat-gate.mjs build/bundled-service
 # Node.js 0.12.2 ships only as x64, so Apple Silicon needs Rosetta; without
-# it, leave the smoke to CI rather than block packaging.
+# it, leave the smoke to CI rather than block packaging. Linux builds run on
+# aarch64/arm64 too — Node 0.12.2 has no linux/arm64 binary, so skip there too.
 if [ "$(uname -sm)" = "Darwin arm64" ] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
   warn "Rosetta is not installed; skipping the Node.js 0.12.2 service smoke (CI runs it)."
   warn "Install it with: softwareupdate --install-rosetta --agree-to-license"
+elif [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" != "x86_64" ]; then
+  warn "Node.js 0.12.2 has no $(uname -m) binary; skipping the service smoke (CI runs it)."
+elif case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) true;; *) false;; esac; then
+  warn "Node.js 0.12.2 has no Windows binary; skipping the service smoke (CI runs it)."
 else
   node scripts/run-service-smoke.mjs
 fi

@@ -528,13 +528,13 @@ http://host:8080/live/u1/p1/102.ts`;
 #EXTINF:-1,Alpha
 http://host:8080/live/u1/p1/101.ts
 #EXTINF:-1,Bravo
-http://host:8080/movie/u1/p1/201.mp4
+http://host:8080/live/u1/p1/201.ts
 #EXTINF:-1,Charlie
-http://host:8080/SeRiEs/u1/p1/301.mkv
+http://host:8080/live/u1/p1/301.ts
 #EXTINF:-1,Delta
-http://host:8080/movies/u1/p1/401.ts
+http://host:8080/live/u1/p1/401.ts
 #EXTINF:-1,Echo
-http://host:8080/play?path=/series/u1/p1/501.mkv
+http://host:8080/live/u1/p1/501.ts
 #EXTINF:-1,Foxtrot
 not-a-url`;
     fetchTextMock.mockImplementation((url: string) => {
@@ -878,6 +878,52 @@ https://host/token/abc?token=new&x=1`;
     fetchTextMock.mockRejectedValue(new Error('down'));
     await PlaylistService.refresh();
     expect(PlaylistService.playlistTabs).toEqual([{ id: 'x', name: 'Acct' }]);
+  });
+
+  it('fetches the derived M3U URL even when the Live catalog is unavailable (Chromium 38 fetch signal)', async () => {
+    fetchTextMock.mockImplementation((url: string) => {
+      if (url.includes('action=get_live_streams')) {
+        // Simulates Chromium 38: fetch(url, {signal}) throws, fetchLimitedText
+        // propagates the error, getLiveStreamsResult() returns unavailable.
+        return Promise.reject(new Error('fetch signal unsupported'));
+      }
+      return Promise.resolve(XT);
+    });
+
+    const channels = await PlaylistService.refresh();
+
+    // fetchUrl is derived from get.php regardless of liveCatalog.available.
+    expect(fetchTextMock).toHaveBeenCalledWith(
+      'http://host:8080/get.php?username=u1&password=p1&type=m3u_plus&output=ts',
+      expect.any(Number),
+    );
+    expect(channels.map(c => c.name)).toEqual(['Alpha', 'Bravo']);
+  });
+
+  it('calls getLiveStreams() when Live catalog is available but empty', async () => {
+    fetchTextMock.mockImplementation((url: string) => {
+      if (url.includes('action=get_live_streams')) {
+        // First call: getLiveStreamsResult() → empty but available.
+        // Second call: getLiveStreams() fallback → streams.
+        const prior = fetchTextMock.mock.calls.filter(
+          ([u]) => typeof u === 'string' && u.includes('action=get_live_streams'),
+        ).length;
+        if (prior === 0) return Promise.resolve('[]');
+        return Promise.resolve(JSON.stringify([
+          { stream_id: 201, name: 'Fallback Stream', tv_archive: 0 },
+        ]));
+      }
+      if (url.includes('player_api.php')) return Promise.resolve('{}');
+      return Promise.resolve(XT);
+    });
+
+    const channels = await PlaylistService.refresh();
+
+    // getLiveStreamsResult() returned empty → M3U parsed with empty references → 0 kept.
+    // Fallback calls getLiveStreams() → creates channel from API stream.
+    expect(channels).toHaveLength(1);
+    expect(channels[0].name).toBe('Fallback Stream');
+    expect(channels[0].url).toBe('http://host:8080/live/u1/p1/201.ts');
   });
 });
 

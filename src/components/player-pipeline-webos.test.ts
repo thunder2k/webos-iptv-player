@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlayerPipelineOptions } from './player-pipeline';
 
 const cacheMocks = vi.hoisted(() => ({
@@ -30,6 +30,10 @@ function videoElement(): HTMLVideoElement {
 }
 
 describe('PlayerPipeline webOS stream MIME cache', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.resetModules();
     cacheMocks.getCachedStreamMime.mockReset();
@@ -56,6 +60,21 @@ describe('PlayerPipeline webOS stream MIME cache', () => {
       expect(video.play).toHaveBeenCalledOnce();
     },
   );
+
+  it('uses a source element with MIME type on webOS even without Response', async () => {
+    vi.stubGlobal('Response', undefined);
+    const { PlayerPipeline } = await import('./player-pipeline');
+    const pipeline = new PlayerPipeline(callbacks());
+    const video = videoElement();
+    pipeline.setVideoElement(video);
+
+    pipeline.load('http://host/live/ch1.ts', null);
+
+    const source = video.querySelector('source');
+    expect(source?.src).toBe('http://host/live/ch1.ts');
+    expect(source?.type).toBe('video/mp2t');
+    expect(video.play).toHaveBeenCalledOnce();
+  });
 
   it('plays an ambiguous route from the IndexedDB MIME cache without probing', async () => {
     cacheMocks.getCachedStreamMime.mockResolvedValue('video/mp2t');

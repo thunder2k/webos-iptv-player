@@ -103,7 +103,7 @@ async function requestPrefix(
     controller.abort();
   }, CONFIG.CHANNEL_HEALTH.TIMEOUT_MS);
   if (signal?.aborted) abort();
-  else signal?.addEventListener('abort', abort);
+  else signal?.addEventListener?.('abort', abort);
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   try {
@@ -156,7 +156,7 @@ async function requestPrefix(
   } finally {
     if (reader) void reader.cancel().catch(() => {});
     clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
+    signal?.removeEventListener?.('abort', abort);
   }
 }
 

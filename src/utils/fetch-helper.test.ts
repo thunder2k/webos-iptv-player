@@ -25,6 +25,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('fetchText / fetchWithTimeout', () => {
@@ -38,6 +39,15 @@ describe('fetchText / fetchWithTimeout', () => {
     vi.stubGlobal('fetch', fetchMock);
     await fetchWithTimeout('http://x');
     expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('uses plain fetch when AbortController is unavailable on legacy webOS', async () => {
+    const fetchMock = vi.fn(async () => okResponse('legacy'));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('AbortController', undefined);
+
+    await expect(fetchLimitedText('http://x', 1024, 5000)).resolves.toBe('legacy');
+    expect(fetchMock).toHaveBeenCalledWith('http://x', {});
   });
 
   it('throws on a non-ok HTTP status', async () => {
@@ -192,29 +202,26 @@ describe('fetchLimitedText', () => {
   });
 
   it('rejects a bounded read when the response exposes no stream reader', async () => {
-    const arrayBuffer = vi.fn(async () =>
-      new TextEncoder().encode('<html></html>').buffer);
+    const fullText = 'x'.repeat(2000);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
-      arrayBuffer,
+      text: async () => fullText,
     } as unknown as Response)));
 
     await expect(fetchLimitedText('http://host/a', 1024, 5000, undefined, ['<?xml', '<MPD']))
       .rejects.toMatchObject({ code: 'too_large' });
-    expect(arrayBuffer).not.toHaveBeenCalled();
   });
 
   it('does not trust Content-Length without a stream reader', async () => {
-    const arrayBuffer = vi.fn(async () => new Uint8Array(2 * 1024 * 1024).buffer);
+    const fullText = 'x'.repeat(2000);
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       headers: new Headers({ 'content-length': '8' }),
-      arrayBuffer,
+      text: async () => fullText,
     } as unknown as Response)));
 
     await expect(fetchLimitedText('http://host/a', 1024, 5000))
       .rejects.toMatchObject({ code: 'too_large' });
-    expect(arrayBuffer).not.toHaveBeenCalled();
   });
 
   it('rejects a non-MPD stream before reading later chunks', async () => {

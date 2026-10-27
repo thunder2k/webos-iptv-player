@@ -11,7 +11,9 @@ import {
   generateFlexGapFallback,
   linkedStylesheets,
   scaleFontSizes,
+  resolveCSSVariables,
 } from './scripts/css-transforms.mjs';
+import { transpileToES5 } from './scripts/transpile-es5.mjs';
 
 const isPreview = process.argv.includes('--preview');
 // Checked-in but regenerated on every build; never a source input.
@@ -30,8 +32,10 @@ function transformStylesheets(outDir) {
   for (const file of readdirSync(outDir)) {
     if (!file.endsWith('.css')) continue;
     const path = `${outDir}/${file}`;
-    const css = convertLegacyColorSyntax(readFileSync(path, 'utf8'));
-    writeFileSync(path, scaleFontSizes(css));
+    let css = convertLegacyColorSyntax(readFileSync(path, 'utf8'));
+    css = scaleFontSizes(css);
+    css = resolveCSSVariables(css);
+    writeFileSync(path, css);
   }
 }
 
@@ -40,13 +44,18 @@ function transformStylesheets(outDir) {
 mkdirSync('dist', { recursive: true });
 const indexHtml = readFileSync('index.html', 'utf8');
 const previewLibsMarker = '<!-- preview-libs -->';
-const outputIndexHtml = indexHtml.replace(
-  previewLibsMarker,
-  isPreview ? '<script src="js/preview-libs.js"></script>' : '',
-);
+const buildTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
+let outputIndexHtml = indexHtml
+  .replace('__APP_VERSION__', version)
+  .replace('__BUILD_TIME__', buildTime)
+  .replace(
+    previewLibsMarker,
+    isPreview ? '<script src="js/preview-libs.js"></script>' : '',
+  );
 if (outputIndexHtml === indexHtml) {
   throw new Error('Build could not find the preview library marker in index.html.');
 }
+
 writeFileSync('dist/index.html', outputIndexHtml);
 cpSync('appinfo.json', 'dist/appinfo.json');
 rmSync('dist/resources', { recursive: true, force: true });
@@ -64,6 +73,10 @@ cpSync('assets/icons', 'dist/assets/icons', { recursive: true });
 
 // Main app bundle — playback libraries remain separate. Shaka is shipped as a
 // lazy TV bundle for Widevine and is also used by the desktop preview.
+// webOS 3.9 (Chromium 38) does not support ES modules (Chrome 61+) or ES2015+
+// syntax (arrow functions, let/const, classes, etc.). esbuild targets es2015
+// to down-level post-ES2015 syntax (`?.` / `??` / dynamic import / async-await)
+// so Chromium 38 can parse it; runtime APIs are covered by src/polyfills.ts.
 const serviceId = JSON.parse(readFileSync('bundled-service/src/services.json', 'utf8')).id;
 const define = {
   '__APP_VERSION__': JSON.stringify(version),
@@ -71,18 +84,13 @@ const define = {
   '__SERVICE_ID__': JSON.stringify(serviceId),
   '__ENABLE_PSEUDO_LOCALE__': JSON.stringify(isPreview),
 };
-// Target Chromium 53 — the engine on webOS 4. This down-levels newer
-// syntax (`?.`, `??`, etc.) which would otherwise fail to parse on
-// older TVs and leave the app stuck on the loading screen.
-const TARGET = ['chrome53'];
+const TARGET = ['es2015'];
+const FORMAT = 'iife';
 
-// Shared config for the main app bundle (src/app.ts). The shipped build and
-// compat-gate scan use the same tree-shaken graph.
 const appBuild = {
   entryPoints: ['src/app.ts'],
   bundle: true,
-  outfile: 'dist/js/app.js',
-  format: 'iife',
+  format: FORMAT,
   target: TARGET,
   banner: { js: LEGACY_JS_BANNER },
   external: ['hls.js', 'mpegts.js', 'shaka-player'],
@@ -91,37 +99,42 @@ const appBuild = {
 const workerBuild = {
   entryPoints: ['src/workers/app-worker.ts'],
   bundle: true,
-  outfile: 'dist/js/app-worker.js',
-  format: 'iife',
+  format: FORMAT,
   target: TARGET,
   banner: { js: LEGACY_JS_BANNER },
   define,
 };
+
+// Build a non-minified esbuild bundle in memory, scan it with the Chromium-38
+// compat gate, then minify and write out. esbuild's es2015 target already
+// down-levels post-ES2015 syntax (?. / ?? / dynamic import / async-await) so
+// Chromium 38 can parse it; runtime APIs are covered by src/polyfills.ts and
+// guarded by the compat gate. Then transpile ES2015 syntax to ES5 for Chromium 38.
+async function buildAndMinify(config, outfile, label) {
+  const scan = await esbuild.build({ ...config, minify: false, write: false });
+  const violations = scanBundle(scan.outputFiles[0].text);
+  if (violations.length > 0) {
+    throw new Error(`${label} bundle:\n${formatViolations(violations)}`);
+  }
+  await esbuild.build({ ...config, minify: true, outfile, target: TARGET, write: true });
+  // Transpile ES2015 syntax (classes, arrow functions, template literals, etc.) to ES5
+  // for Chromium 38 (webOS 3.9) compatibility.
+  transpileToES5(outfile, outfile);
+}
+
 const shippedBuilds = [
-  { name: 'app', config: appBuild },
-  { name: 'worker', config: workerBuild },
+  { name: 'app', config: appBuild, outfile: 'dist/js/app.js' },
+  { name: 'worker', config: workerBuild, outfile: 'dist/js/app-worker.js' },
 ];
 
-// Shipped bundles (minified, both go into the IPK).
-await Promise.all(shippedBuilds.map(({ config }) =>
-  esbuild.build({ ...config, minify: true })));
+await Promise.all(shippedBuilds.map(({ name, config, outfile }) =>
+  buildAndMinify(config, outfile, name)));
 
 const shakaBundle = readFileSync('node_modules/shaka-player/dist/shaka-player.dash.js', 'utf8');
 validateShakaBundle(shakaBundle);
 writeFileSync('dist/js/shaka-player.dash.js', shakaBundle);
 
-// webOS 4 (Chromium 53) bundle compat gate. Down-leveling handles post-53
-// *syntax*, but not *APIs* — and dependencies get bundled in without passing
-// through the eslint source gate. Scan a NON-minified build of the same entry
-// (same tree-shaken graph, readable identifiers) for banned APIs.
-for (const { name, config } of shippedBuilds) {
-  const scan = await esbuild.build({ ...config, minify: false, write: false });
-  const violations = scanBundle(scan.outputFiles[0].text);
-  if (violations.length > 0) {
-    throw new Error(`${name} bundle:\n${formatViolations(violations)}`);
-  }
-}
-console.log('Compat gate: app, worker and Shaka bundles are Chromium-53 clean.');
+console.log('Compat gate: app and worker bundles are Chromium-38 clean.');
 
 // Desktop-only HLS and MPEG-TS libraries. Shaka stays in its separate lazy
 // bundle on both desktop and webOS.
@@ -129,10 +142,11 @@ if (isPreview) {
   await esbuild.build({
     entryPoints: ['src/preview-libs.ts'],
     bundle: true,
-    outfile: 'dist/js/preview-libs.js',
-    format: 'iife',
+    format: FORMAT,
     target: TARGET,
     minify: true,
+    outfile: 'dist/js/preview-libs.js',
+    write: true,
   });
 } else {
   rmSync('dist/js/preview-libs.js', { force: true });

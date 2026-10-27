@@ -5,11 +5,8 @@
 //   engines that leave the end padding out of the scroll width.
 // - Font scale: wrap pixel font sizes in the app-wide --font-scale variable.
 // - Legacy colors: convert modern rgb(var(...) / alpha) syntax for Chrome 53.
+// - CSS variables: resolve var(--name) to actual values for Chromium 38.
 import postcss from 'postcss';
-
-// Classes src/engine-quirks.ts measures and sets on <html>.
-export const SCROLL_END_QUIRK = 'html.q-scroll-end-padding';
-export const NO_FLEX_GAP_QUIRK = 'html.q-no-flex-gap';
 
 const RGB_PROP_RE = /^--[\w-]+-rgb$/;
 const RGB_VAR_ALIAS_RE = /^var\((--[\w-]+)\)$/;
@@ -17,17 +14,21 @@ const MODERN_RGB_USAGE_RE = /rgb\(\s*var\((--[\w-]+)\)\s*\/\s*([^()]+)\)/g;
 
 const GRID_DISPLAY_RE = /\bgrid\b/;
 
-// A grid whose columns are an explicit heterogeneous track list holds one row
-// and no more: every child lands in a declared track. `repeat()` sizes a track
-// list to content that outruns it, so those wrap and stay out.
+export const SCROLL_END_QUIRK = 'html.q-scroll-end-padding';
+export const NO_FLEX_GAP_QUIRK = 'html.q-no-flex-gap';
+
+function selectorParts(selector) {
+  return selector.split(',').map((part) => part.trim());
+}
+
+function lastCompound(part) {
+  return part.split(/[\s>+~]+/).filter(Boolean).pop() || part;
+}
+
 function isSingleRowGrid(templateColumns) {
   return postcss.list.space(templateColumns).length > 1;
 }
 
-// Grid containers the hand-written `@supports not (display: grid)` fallbacks
-// already space themselves — with their own margins, or by wrapping — so a
-// generated sibling margin would stack on top or land on a wrapped row. A
-// fallback that only swaps `display` leaves the spacing to be regenerated.
 function collectGridOverrides(stylesheets) {
   const claimed = new Set();
   for (const css of stylesheets) {
@@ -36,7 +37,6 @@ function collectGridOverrides(stylesheets) {
       atRule.walkRules((rule) => {
         let spaces = false;
         rule.walkDecls((decl) => {
-          // `auto` margins center a container; they do not space its children.
           if (/^margin(-|$)/.test(decl.prop) && !/\bauto\b/.test(decl.value)) spaces = true;
           if (decl.prop === 'flex-wrap' && decl.value.trim() !== 'nowrap') spaces = true;
         });
@@ -50,16 +50,6 @@ function collectGridOverrides(stylesheets) {
   return claimed;
 }
 
-const selectorParts = (selector) => selector.split(',').map((part) => part.trim());
-
-// The rightmost compound of a descendant selector, so an override like
-// `#playlist-entries .settings-row` can inherit `.settings-row`'s flex context.
-const lastCompound = (part) => part.split(/[\s>+~]+/).filter(Boolean).pop() || part;
-
-// A gap-carrying rule often does not declare `display` itself: it either refines
-// a base rule with the same selector, narrows one (`#id .base`), or rides a
-// companion class on the same element (`.setup-box-info.device-setup-card`).
-// Collect what each selector declares anywhere so those rules still resolve.
 function collectFlexContext(stylesheets) {
   const context = new Map();
   const record = (key, prop, value) => {
@@ -97,10 +87,6 @@ export function linkedStylesheets(indexHtml, cssDirFiles, generated) {
   return linked;
 }
 
-const SCROLLING_RE = /^(auto|scroll)$/;
-const ZERO_LENGTH_RE = /^0(px|r?em|%)?$/;
-const SPACER_PROP_RE = /^(display|flex-direction|flex-wrap|justify-content|overflow(-x)?|padding(-right|-inline-end)?|gap|column-gap)$/;
-
 function boxSide(shorthand, index) {
   const values = postcss.list.space(shorthand || '');
   if (!values.length) return '';
@@ -108,7 +94,6 @@ function boxSide(shorthand, index) {
   return values[index] || values[0];
 }
 
-// `a - b - c` as px when every term is px, else a calc() the engine resolves.
 function subtract(first, ...rest) {
   const terms = [first, ...rest];
   if (terms.every((term) => /^-?\d*\.?\d+px$/.test(term))) {
@@ -118,19 +103,11 @@ function subtract(first, ...rest) {
   return `calc(${terms.join(' - ')})`;
 }
 
-// Chromium before 91 leaves a row flex scroller's padding-right out of its
-// scroll width, so the last item scrolls flush to the edge. (Its block-end
-// padding does count: a column scroller needs nothing, as the webOS 4 emulator
-// shows.) A 1px ::after placed `padding` past the last item rebuilds that room
-// from content on every engine; engines that do count the padding only scroll
-// that much further. It is 1px on both axes because a zero-area box adds no
-// scrollable overflow there. A trailing margin of -padding nets the spacer to
-// zero outer size, so a container that does not overflow keeps its size.
-// Without flex gap no gap precedes the spacer, so its offset grows by the gap.
-// Wrapping or justified containers would lay the spacer out as a real item,
-// so they are left alone. Every rule is scoped to the measured quirk, so an
-// engine that counts the padding never scrolls past it.
-export function generateScrollEndSpacers(stylesheets) {
+const SCROLLING_RE = /^(auto|scroll)$/;
+const ZERO_LENGTH_RE = /^0(px|r?em|%)?$/;
+const SPACER_PROP_RE = /^(display|flex-direction|flex-wrap|justify-content|overflow(-x)?|padding(-right|-inline-end)?|gap|column-gap)$/;
+
+function generateScrollEndSpacers(stylesheets) {
   const declared = new Map();
   const pseudoAfter = new Set();
   for (const css of stylesheets) {
@@ -149,14 +126,14 @@ export function generateScrollEndSpacers(stylesheets) {
     if (!/^inline-flex$|^flex$/.test(d.display || '')) return null;
     if ((d['flex-direction'] || 'row') !== 'row') return null;
     const overflow = postcss.list.space(d.overflow || '');
-    if (!SCROLLING_RE.test(d['overflow-x'] || overflow[0] || '')) return null;
+    if (!/^(auto|scroll)$/.test(d['overflow-x'] || overflow[0] || '')) return null;
     if (!/^(|nowrap)$/.test(d['flex-wrap'] || '')) return null;
     if (!/^(|normal|start|flex-start)$/.test(d['justify-content'] || '')) return null;
     const padding = d['padding-right'] || d['padding-inline-end'] || boxSide(d.padding, 1);
-    if (!padding || ZERO_LENGTH_RE.test(padding)) return null;
+    if (!padding || /^0(px|r?em|%)?$/.test(padding)) return null;
     const gapValues = postcss.list.space(d.gap || '');
     const rawGap = d['column-gap'] || gapValues[1] || gapValues[0];
-    const gap = rawGap && !ZERO_LENGTH_RE.test(rawGap) ? rawGap : '';
+    const gap = rawGap && !/^0(px|r?em|%)?$/.test(rawGap) ? rawGap : '';
     return {
       modern: "content: ''; flex: 0 0 1px; width: 1px; height: 1px; "
         + `margin-left: ${gap ? subtract(padding, gap, '1px') : subtract(padding, '1px')}; `
@@ -173,8 +150,6 @@ export function generateScrollEndSpacers(stylesheets) {
         + 'give it a scroll-end spacer by hand');
     }
     modern.push(`${SCROLL_END_QUIRK} ${selector}::after { ${spacer ? spacer.modern : 'content: none;'} }`);
-    // Only the flex-gap class, so the offset keeps the spacer rule's own
-    // specificity; without `content` from the spacer rule it renders nothing.
     if (spacer && spacer.legacy) legacy.push(`${NO_FLEX_GAP_QUIRK} ${selector}::after { ${spacer.legacy} }`);
   };
   const classesOf = (compound) => compound.match(/\.[\w-]+/g) || [];
@@ -185,8 +160,6 @@ export function generateScrollEndSpacers(stylesheets) {
     emit(selector, spacer);
     scrollers.push(selector);
   }
-  // A compound selector that restyles a scroller (`.tabs.compact`) inherits its
-  // spacer, so recompute it there, or drop it when that variant has no padding.
   for (const base of scrollers) {
     if (/[\s>+~]/.test(base)) continue;
     const baseClasses = classesOf(base);
@@ -237,12 +210,6 @@ export function generateFlexGapFallback(stylesheets) {
         return '';
       };
 
-      // A grid usually degrades to some inline/float layout the override sheet
-      // writes by hand, and a sibling margin would stack on top of that. One
-      // grid does not: an explicit heterogeneous track list no override claims
-      // can only ever be one row, so the same `> * + *` margin-left a flex row
-      // gets is provably right there — but only without grid itself: Chromium
-      // 66-83 lacks flex gap yet has grid gap, and would space it twice.
       const resolvedDisplay = display || inherited('display');
       const isGrid = GRID_DISPLAY_RE.test(resolvedDisplay);
       if (isGrid && (!isSingleRowGrid(templateColumns)
@@ -258,9 +225,6 @@ export function generateFlexGapFallback(stylesheets) {
         : columnGap || shorthandColumnGap;
       if (!spacing) return;
       const margin = column ? 'margin-top' : 'margin-left';
-      // A rule that flips direction without redeclaring `display` overrides a base
-      // flex container, whose fallback margin sits on the other axis. That margin
-      // is not ours to inherit, so zero it — real gap never spans both axes.
       const reset = !isGrid && direction && !display ? ` ${column ? 'margin-left' : 'margin-top'}: 0;` : '';
       const selector = parts.map((part) => `${NO_FLEX_GAP_QUIRK} ${part} > * + *`).join(', ');
       const declaration = `${selector} { ${margin}: ${spacing};${reset} }`;
@@ -314,9 +278,7 @@ function legacyValueFor(value) {
 export function convertLegacyColorSyntax(css) {
   const root = postcss.parse(css);
 
-  // Legacy rgba() needs comma-separated RGB values. A companion property in
-  // the same rule preserves each theme's cascade and aliases.
-  root.walkDecls(RGB_PROP_RE, (decl) => {
+  root.walkDecls(/^--[\w-]+-rgb$/, (decl) => {
     const legacyProp = `${decl.prop}-legacy`;
     const hasCompanion = decl.parent.nodes.some((node) => node.prop === legacyProp);
     if (hasCompanion) return;
@@ -326,10 +288,75 @@ export function convertLegacyColorSyntax(css) {
   root.walkDecls((decl) => {
     if (!decl.value.includes('rgb(var(')) return;
     decl.value = decl.value.replace(
-      MODERN_RGB_USAGE_RE,
+      /rgb\(\s*var\((--[\w-]+)\)\s*\/\s*([^()]+)\)/g,
       (_match, name, alpha) => `rgba(var(${name}-legacy), ${alpha.trim()})`,
     );
   });
 
   return root.toString();
+}
+
+// Resolve CSS custom properties (variables) to their actual values for the default theme (midnight).
+// Chromium 38 (webOS 3.9) doesn't support CSS custom properties, so we must resolve them at build time.
+export function resolveCSSVariables(css) {
+  const midnightTheme = {
+    '--bg-primary': '#0a0a0f',
+    '--catalog-hero-scrim-rgb': '10 10 15',
+    '--bg-secondary': '#12121a',
+    '--bg-tertiary': '#1a1a2e',
+    '--bg-card': '#16213e',
+    '--text-primary': '#e8e8e8',
+    '--text-secondary': '#a0a0b0',
+    '--text-muted': '#666680',
+    '--accent': '#00d4ff',
+    '--accent-dim': '#0088aa',
+    '--accent-rgb': '0 212 255',
+    '--accent-glow': 'rgba(0, 212, 255, 0.3)',
+    '--danger': '#ff4757',
+    '--danger-rgb': '255 71 87',
+    '--success': '#2ed573',
+    '--warning': '#ffa502',
+    '--warning-rgb': '255 165 2',
+    '--border': '#2a2a3e',
+    '--scrollbar-thumb': '#3a3a4a',
+    '--scrollbar-track': '#0a0a0f',
+    '--focus-ring': '#00d4ff',
+    '--overlay-bg': 'rgba(10, 10, 15, 0.9)',
+    '--overlay-border': '#2a2a3e',
+    '--input-bg': '#12121a',
+    '--input-border': '#2a2a3e',
+    '--input-text': '#e8e8e8',
+    '--input-placeholder': '#666680',
+    '--button-primary-bg': '#00d4ff',
+    '--button-primary-text': '#0a0a0f',
+    '--button-secondary-bg': '#1a1a2e',
+    '--button-secondary-text': '#e8e8e8',
+    '--button-danger-bg': '#ff4757',
+    '--button-danger-text': '#ffffff',
+    '--toast-bg': '#1a1a2e',
+    '--toast-text': '#e8e8e8',
+    '--modal-bg': '#12121a',
+    '--modal-border': '#2a2a3e',
+    '--tooltip-bg': '#1a1a2e',
+    '--tooltip-text': '#e8e8e8',
+    '--scrollbar-thumb-hover': '#4a4a5a',
+    '--font-scale': '1',
+    '--accent-rgb-legacy': '0, 212, 255',
+    '--danger-rgb-legacy': '255, 71, 87',
+    '--warning-rgb-legacy': '255, 165, 2',
+    '--channel-health-healthy': '#2ed573',
+    '--channel-health-suspect': '#ffa502',
+    '--channel-health-unavailable': '#ff4757',
+    '--transition': '0.2s ease',
+    '--radius': '8px',
+  };
+
+  let result = css;
+  for (const [variable, value] of Object.entries(midnightTheme)) {
+    // Simple regex to match var(--variable-name) without fallback handling
+    const escaped = variable.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`var\\(${escaped}\\)`, 'g');
+    result = result.replace(regex, value);
+  }
+  return result;
 }

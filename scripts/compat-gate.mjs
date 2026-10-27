@@ -1,8 +1,8 @@
-// webOS 4 (Chromium 53) bundle compat gate — single module holding the
-// denylist of post-53 APIs, the allowlist of accepted exceptions, and the
+// webOS 3.9 (Chromium 38) bundle compat gate — single module holding the
+// denylist of post-38 APIs, the allowlist of accepted exceptions, and the
 // scanner. Consumed by:
 //   - esbuild.config.mjs → scans a NON-minified build of the app bundle and
-//                          throws on any un-allowlisted post-53 API (catches
+//                          throws on any un-allowlisted post-38 API (catches
 //                          APIs introduced by bundled dependencies).
 //   - eslint.config.mjs  → derives its `no-restricted-syntax` selectors from
 //                          the `method` entries of DENYLIST (source gate).
@@ -68,6 +68,11 @@ export const DENYLIST = [
   { name: 'FinalizationRegistry', kind: 'constructor', minChrome: 84, message: 'FinalizationRegistry is Chrome 84+ — perform deterministic cleanup.' },
   { name: 'AggregateError', kind: 'constructor', minChrome: 85, message: 'AggregateError is Chrome 85+ — use Error with explicit failure details.' },
   // --- instance methods (also drive eslint no-restricted-syntax) ---
+  { name: 'includes', kind: 'method', minChrome: 47, message: 'Array/String.prototype.includes is Chrome 47+ — use indexOf !== -1.' },
+  { name: 'startsWith', kind: 'method', minChrome: 41, message: 'String.prototype.startsWith is Chrome 41+ — use indexOf === 0.' },
+  { name: 'endsWith', kind: 'method', minChrome: 41, message: 'String.prototype.endsWith is Chrome 41+ — use slice/substr comparison.' },
+  { name: 'find', kind: 'method', minChrome: 45, message: 'Array.prototype.find is Chrome 45+ — use a loop.' },
+  { name: 'findIndex', kind: 'method', minChrome: 45, message: 'Array.prototype.findIndex is Chrome 45+ — use a loop with index.' },
   { name: 'padStart', kind: 'method', minChrome: 57, message: 'String.prototype.padStart is Chrome 57+ — use the guarded project polyfill.' },
   { name: 'padEnd', kind: 'method', minChrome: 57, message: 'String.prototype.padEnd is Chrome 57+ — append and slice padding explicitly.' },
   { name: 'finally', kind: 'method', minChrome: 63, message: 'Promise.prototype.finally is Chrome 63+ — use .then(onSettled, onSettled).' },
@@ -86,10 +91,12 @@ export const DENYLIST = [
   { name: 'isWellFormed', kind: 'method', minChrome: 111, message: 'String.prototype.isWellFormed is Chrome 111+ — validate surrogate pairs explicitly.' },
   { name: 'toWellFormed', kind: 'method', minChrome: 111, message: 'String.prototype.toWellFormed is Chrome 111+ — sanitize surrogate pairs explicitly.' },
   // --- globals (bundle scan only; eslint covers these via compat/compat) ---
+  { name: 'fetch', kind: 'global', minChrome: 42, message: 'fetch is Chrome 42+ — use the guarded project polyfill (XMLHttpRequest-based).' },
   { name: 'BigInt', kind: 'global', minChrome: 67, message: 'BigInt is Chrome 67+ — use Number or string-based integer handling.' },
   { name: 'structuredClone', kind: 'global', minChrome: 98, message: 'structuredClone is Chrome 98+ — write a typed copy for the required data.' },
   { name: 'queueMicrotask', kind: 'global', minChrome: 71, message: 'queueMicrotask is Chrome 71+ — use Promise.resolve().then().' },
   // --- static built-in methods (bundle scan only; eslint covers via compat/compat) ---
+  { name: 'assign', kind: 'static', object: 'Object', minChrome: 45, message: 'Object.assign is Chrome 45+ — use the guarded project polyfill.' },
   { name: 'values', kind: 'static', object: 'Object', minChrome: 54, message: 'Object.values is Chrome 54+ — use the guarded project polyfill.' },
   { name: 'entries', kind: 'static', object: 'Object', minChrome: 54, message: 'Object.entries is Chrome 54+ — use the guarded project polyfill.' },
   { name: 'getOwnPropertyDescriptors', kind: 'static', object: 'Object', minChrome: 54, message: 'Object.getOwnPropertyDescriptors is Chrome 54+ — keep the pre-bundle helper polyfill.' },
@@ -108,18 +115,31 @@ export const DENYLIST = [
 // feature-detection guards, so 'guarded' usages rarely need an entry here
 // (e.g. fflate's guarded queueMicrotask is not flagged and needs no allowlist).
 export const ALLOWLIST = [
-  { name: 'AbortController', reason: 'polyfilled', note: 'src/polyfills.ts installs an AbortController and logical fetch cancellation on Chromium 53.' },
-  { name: 'PluralRules', reason: 'polyfilled', note: 'src/polyfills.ts installs cardinal rules for the app locales on Chromium 53.' },
-  { name: 'ResizeObserver', reason: 'polyfilled', note: 'src/polyfills.ts observes window and video metadata changes for assjs on Chromium 53.' },
+  { name: 'fetch', reason: 'polyfilled', note: 'src/polyfills.ts installs an XMLHttpRequest-based fetch polyfill on Chromium 38.' },
+  { name: 'assign', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Object.assign on Chromium 38.' },
+  { name: 'AbortController', reason: 'polyfilled', note: 'src/polyfills.ts installs an AbortController and logical fetch cancellation on Chromium 38.' },
+  { name: 'PluralRules', reason: 'polyfilled', note: 'src/polyfills.ts installs cardinal rules for the app locales on Chromium 38.' },
+  { name: 'ResizeObserver', reason: 'polyfilled', note: 'src/polyfills.ts observes window and video metadata changes for assjs on Chromium 38.' },
   { name: 'padStart', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded String.prototype.padStart.' },
   { name: 'values', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Object.values.' },
   { name: 'entries', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Object.entries.' },
   { name: 'getOwnPropertyDescriptors', reason: 'polyfilled', note: 'The esbuild banner installs this before generated helper aliases are captured.' },
   { name: 'flatMap', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Array.prototype.flatMap for assjs.' },
   { name: 'fromEntries', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Object.fromEntries for assjs.' },
+  { name: 'includes', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Array/String.prototype.includes.' },
+  { name: 'startsWith', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded String.prototype.startsWith.' },
+  { name: 'endsWith', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded String.prototype.endsWith.' },
+  { name: 'find', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Array.prototype.find.' },
+  { name: 'findIndex', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Array.prototype.findIndex.' },
+  { name: 'Map', reason: 'polyfilled', note: 'src/polyfills.ts installs a minimal Map polyfill for Chromium 38.' },
+  { name: 'Set', reason: 'polyfilled', note: 'src/polyfills.ts installs a minimal Set polyfill for Chromium 38.' },
+  { name: 'WeakMap', reason: 'polyfilled', note: 'src/polyfills.ts installs a minimal WeakMap polyfill for Chromium 38.' },
+  { name: 'WeakSet', reason: 'polyfilled', note: 'src/polyfills.ts installs a minimal WeakSet polyfill for Chromium 38.' },
+  { name: 'closest', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Element.prototype.closest for Chromium 38.' },
+  { name: 'matches', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Element.prototype.matches for Chromium 38.' },
 ];
 
-// Scan bundled JS for post-53 APIs using a real AST (TypeScript's parser, a
+// Scan bundled JS for post-38 APIs using a real AST (TypeScript's parser, a
 // dependency we already have). Parsing — rather than text-matching — means
 // occurrences inside string/template literals, comments, and regex literals
 // are ignored, and a `typeof x` feature-detection guard is not mistaken for a
@@ -276,7 +296,7 @@ export function formatViolations(violations) {
   const n = violations.length;
   const lines = [
     '',
-    `\u2717 webOS 4 (Chromium 53) compat gate failed \u2014 ${n} post-53 API${n === 1 ? '' : 's'} in the app bundle:`,
+    `\u2717 webOS 3.9 (Chromium 38) compat gate failed \u2014 ${n} post-38 API${n === 1 ? '' : 's'} in the app bundle:`,
     '',
   ];
   for (const v of violations) {

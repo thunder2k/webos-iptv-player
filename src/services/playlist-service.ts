@@ -50,6 +50,30 @@ import { liveParentalRequest, ParentalControlService } from './parental-control'
 
 const log = createLogger('Playlist');
 
+function debugSetPlaylists(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugPlaylists = value;
+}
+
+function debugSetCachedPlaylist(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugCachedPlaylist = value;
+}
+
+function debugSetLoadEnd(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugLoadEnd = value;
+}
+
+function debugSetXtreamState(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugXtreamState = value;
+}
+
+function debugSetM3uState(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugM3uState = value;
+}
+
+function debugSetFallbackState(value: unknown): void {
+  if (typeof window !== 'undefined') (window as any).__debugFallbackState = value;
+}
+
 export interface PlaylistLoadProgress {
   sourceNumber: number;
   sourceCount: number;
@@ -253,6 +277,7 @@ class PlaylistServiceImpl {
   async load(onProgress?: (progress: PlaylistLoadProgress) => void): Promise<Channel[]> {
     const enabledSources = StorageService.getPlaylists().filter(isSourceEnabled);
     const enabledIds = new Set(enabledSources.map(source => source.id));
+    debugSetPlaylists(enabledSources.map(p => ({ name: p.name || p.url, source: p.source, id: p.id, enabled: p.enabled, hasXtream: !!p.xtream })));
     if (!enabledIds.size) {
       this.reset();
       this.logLoadCompleted('none', 0, 0);
@@ -261,6 +286,7 @@ class PlaylistServiceImpl {
     // Boot from an expired cache too; App schedules the overdue refresh in the
     // background instead of blocking startup on a full download.
     const cached = await getCachedPlaylist(null);
+    debugSetCachedPlaylist(cached ? { channels: cached.channels.length, epgSources: cached.epgSources.length } : null);
     if (cached) {
       this.failedSourceIds.clear();
       this.refreshTimestamp = cached.timestamp;
@@ -292,7 +318,16 @@ class PlaylistServiceImpl {
       return this.channels;
     }
     log.info('Cache miss — refreshing from network');
-    return this.refresh(onProgress);
+    const result = await this.refresh(onProgress);
+    debugSetLoadEnd({ fromCache: false, channels: result.length });
+    if (result.length === 0 && enabledSources.length > 0) {
+      throw new Error(
+        `Failed to load any channels from ${enabledSources.length} playlist source${
+          enabledSources.length > 1 ? 's' : ''
+        }. Please check your playlist URLs are valid M3U playlists (not shortened URLs behind Cloudflare or other protection).`
+      );
+    }
+    return result;
   }
 
   async refresh(
@@ -420,6 +455,14 @@ class PlaylistServiceImpl {
           xtreamOutput,
         );
       }
+      debugSetXtreamState({
+        hasXtream: !!pl.xtream,
+        hasCredentials: !!xtreamCredentials,
+        catalogAvailable: xtreamCatalogAvailable,
+        streamCount: xtreamStreams?.length ?? 0,
+        referenceCount: xtreamReferences?.length ?? 0,
+        fetchUrl,
+      });
       const plDone = log.time(`fetch '${pl.name || pl.url}'`);
       try {
         let parsed: ParsedPlaylist | null = null;
@@ -444,8 +487,18 @@ class PlaylistServiceImpl {
             xtreamGroupFilter,
           );
           parsed = loaded.data;
+          debugSetM3uState({
+            parsedChannels: parsed.channels.length,
+            parsedGroups: parsed.groups.length,
+            playlistError: null,
+          });
         } catch (err) {
           playlistError = err;
+          debugSetM3uState({
+            parsedChannels: parsed?.channels.length ?? 0,
+            parsedGroups: parsed?.groups.length ?? 0,
+            playlistError: String(err),
+          });
           if (!xtreamCredentials) throw err;
           log.warn(
             'Xtream playlist failed; trying the Player API live catalog',
@@ -457,39 +510,49 @@ class PlaylistServiceImpl {
 
         let fallbackStreams: XtreamLiveStream[] | undefined;
         if (xtreamCredentials && (!parsed || !parsed.channels.length)) {
-          if (parsed) {
-            log.warn(
-              'Xtream playlist contained no channels; trying the Player API live catalog',
-              'event=xtream.live_fallback.used',
+          try {
+            if (parsed) {
+              log.warn(
+                'Xtream playlist contained no channels; trying the Player API live catalog',
+                'event=xtream.live_fallback.used',
+                `load=${String(load)}`,
+                'reason=no_channels',
+              );
+            }
+            const client = createXtreamClient(xtreamCredentials);
+            const categories = await client.getLiveCategories();
+            const allStreams = xtreamCatalogAvailable
+              ? xtreamStreams ?? []
+              : await client.getLiveStreams();
+            fallbackStreams = allStreams;
+            const streams = filterLiveStreams(categoryFilter, allStreams);
+            log.info(
+              'Xtream Player API live catalog completed',
+              'event=xtream.live_api.completed',
               `load=${String(load)}`,
-              'reason=no_channels',
+              `categories=${String(categories.length)}`,
+              `streams=${String(streams.length)}`,
             );
-          }
-          const client = createXtreamClient(xtreamCredentials);
-          const categories = await client.getLiveCategories();
-          const allStreams = xtreamCatalogAvailable
-            ? xtreamStreams ?? []
-            : await client.getLiveStreams();
-          fallbackStreams = allStreams;
-          const streams = filterLiveStreams(categoryFilter, allStreams);
-          log.info(
-            'Xtream Player API live catalog completed',
-            'event=xtream.live_api.completed',
-            `load=${String(load)}`,
-            `categories=${String(categories.length)}`,
-            `streams=${String(streams.length)}`,
-          );
-          if (streams.length) {
-            parsed = xtreamLivePlaylist(
-              xtreamCredentials,
-              xtreamOutput,
-              categories,
-              streams,
-            );
-          } else if (!parsed && playlistError) {
-            throw playlistError;
+            if (streams.length) {
+              parsed = xtreamLivePlaylist(
+                xtreamCredentials,
+                xtreamOutput,
+                categories,
+                streams,
+              );
+            } else if (!parsed && playlistError) {
+              throw playlistError;
+            }
+          } catch (fallbackErr) {
+            if (typeof window !== 'undefined') (window as any).__debugFallbackError = String(fallbackErr);
+            throw fallbackErr;
           }
         }
+        debugSetFallbackState({
+          fallbackStreamsCount: fallbackStreams?.length ?? 0,
+          parsedChannels: parsed?.channels.length ?? 0,
+          parsed: !!parsed,
+        });
         if (!parsed) throw new Error('Xtream source returned no playlist or live catalog');
 
         if (xtreamCredentials) {

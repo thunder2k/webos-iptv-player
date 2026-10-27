@@ -387,3 +387,366 @@ if (typeof window !== 'undefined' && !(Node.prototype as any).getRootNode) {
   (Node.prototype as unknown as { getRootNode: typeof getRootNodePolyfill }).getRootNode =
     getRootNodePolyfill;
 }
+
+// Chromium 38 (webOS 3.9): HTMLVideoElement.play() returns undefined instead of
+// a Promise (Promise-returning play() was added in Chrome 42). Patch it so
+// callers can safely chain .catch() on the result.
+if (
+  typeof HTMLVideoElement !== 'undefined'
+  && typeof HTMLVideoElement.prototype.play === 'function'
+) {
+  const nativePlay = HTMLVideoElement.prototype.play;
+  HTMLVideoElement.prototype.play = function (this: HTMLVideoElement): Promise<void> {
+    return Promise.resolve(nativePlay.call(this));
+  };
+}
+
+// Chromium 38 (webOS 3.9) lacks Object.assign (Chrome 45+) and fetch (Chrome 42+).
+// These polyfills are feature-detected so they are no-ops on newer engines.
+if (typeof Object.assign !== 'function') {
+  Object.assign = function (target: any, ...sources: any[]): any {
+    if (target == null) throw new TypeError('Cannot convert undefined or null to object');
+    const to = Object(target);
+    for (let i = 0; i < sources.length; i++) {
+      const source = sources[i];
+      if (source != null) {
+        for (const key in source) {
+          if (Object.prototype.hasOwnProperty.call(source, key)) to[key] = source[key];
+        }
+      }
+    }
+    return to;
+  } as any;
+}
+
+function installFetchPolyfill(): void {
+  if (typeof self === 'undefined') return;
+  if (typeof fetch !== 'undefined') return;
+  if (typeof XMLHttpRequest === 'undefined' || typeof Promise === 'undefined') return;
+
+  const toHeaderMap = (init: any): Record<string, string> => {
+    const map: Record<string, string> = {};
+    if (!init) return map;
+    if (Array.isArray(init)) {
+      for (let i = 0; i < init.length; i++) {
+        const pair = init[i];
+        map[String(pair[0]).toLowerCase()] = String(pair[1]);
+      }
+    } else {
+      for (const key of Object.keys(init)) map[key.toLowerCase()] = String(init[key]);
+    }
+    return map;
+  };
+
+  class ResponsePolyfill {
+    readonly ok: boolean;
+    readonly status: number;
+    readonly statusText: string;
+    readonly url: string;
+    readonly headers: Record<string, string> & { get(name: string): string | null };
+    readonly body: null = null;
+    private _text = '';
+    _buf: ArrayBuffer | null = null;
+
+    constructor(body: string | ArrayBuffer | null, init: any = {}) {
+      this.status = init.status === undefined ? 200 : Number(init.status);
+      this.ok = this.status >= 200 && this.status < 300;
+      this.statusText = init.statusText === undefined ? '' : String(init.statusText);
+      this.url = init.url || '';
+      const headersMap = toHeaderMap(init.headers);
+      this.headers = headersMap as Record<string, string> & { get(name: string): string | null };
+      this.headers.get = (name: string) => headersMap[String(name).toLowerCase()] ?? null;
+      if (typeof body === 'string') this._text = body;
+      else if (body instanceof ArrayBuffer) this._buf = body;
+    }
+
+    text(): Promise<string> {
+      return Promise.resolve(this._text);
+    }
+
+    json(): Promise<any> {
+      return this.text().then(t => JSON.parse(t));
+    }
+
+    arrayBuffer(): Promise<ArrayBuffer> {
+      if (this._buf) return Promise.resolve(this._buf);
+      const bytes = new Uint8Array(this._text.length);
+      for (let i = 0; i < this._text.length; i++) bytes[i] = this._text.charCodeAt(i) & 0xff;
+      return Promise.resolve(bytes.buffer);
+    }
+  }
+
+  (self as any).fetch = function (input: any, init: any = {}): Promise<ResponsePolyfill> {
+    const xhr = new XMLHttpRequest();
+    const method = (init.method || 'GET').toUpperCase();
+    const url = typeof input === 'string' ? input : String(input);
+    xhr.open(method, url, true);
+
+    for (const [k, v] of Object.entries(toHeaderMap(init.headers))) {
+      xhr.setRequestHeader(k, v);
+    }
+
+    const signal = init.signal;
+    if (signal) {
+      const onAbort = () => xhr.abort();
+      signal.addEventListener('abort', onAbort);
+      xhr.addEventListener('loadend', () => signal.removeEventListener('abort', onAbort));
+      if (signal.aborted) {
+        xhr.abort();
+        return Promise.reject(new Error('Aborted'));
+      }
+    }
+
+    return new Promise<ResponsePolyfill>((resolve, reject) => {
+      xhr.onload = () => {
+        const raw = xhr.getAllResponseHeaders();
+        const headers: Record<string, string> = {};
+        for (const line of raw.split('\r\n')) {
+          const idx = line.indexOf(':');
+          if (idx > 0) {
+            headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+          }
+        }
+        const rt = xhr.responseType;
+        const text = rt === '' || rt === 'text' ? xhr.responseText : '';
+        const buf = rt === 'arraybuffer' ? xhr.response : null;
+        const res = new ResponsePolyfill(buf ? null : text, {
+          status: xhr.status,
+          statusText: xhr.statusText,
+          url: xhr.responseURL || url,
+          headers,
+        });
+        if (buf) res._buf = buf;
+        resolve(res);
+      };
+      xhr.onabort = () => { if (!aborted) reject(new Error('Aborted')); };
+      xhr.onerror = () => reject(new TypeError('Failed to fetch'));
+      xhr.ontimeout = () => reject(new TypeError('Failed to fetch'));
+      let aborted = false;
+      xhr.send(init.body === undefined ? null : init.body);
+    });
+  } as any;
+}
+
+if (typeof self !== 'undefined') installFetchPolyfill();
+
+// Map polyfill (Chrome 38 lacks Map - Chrome 43+)
+if (typeof Map === 'undefined') {
+  // Minimal Map polyfill for ES5
+  (self as any).Map = class MapPolyfill<K, V> {
+    private _keys: K[] = [];
+    private _values: V[] = [];
+    constructor(iterable?: Iterable<[K, V]>) {
+      if (iterable) {
+        for (const [k, v] of iterable) this.set(k, v);
+      }
+    }
+    get size(): number { return this._keys.length; }
+    has(key: K): boolean { return this._keys.indexOf(key) !== -1; }
+    get(key: K): V | undefined {
+      const i = this._keys.indexOf(key);
+      return i !== -1 ? this._values[i] : undefined;
+    }
+    set(key: K, value: V): this {
+      const i = this._keys.indexOf(key);
+      if (i !== -1) this._values[i] = value;
+      else { this._keys.push(key); this._values.push(value); }
+      return this;
+    }
+    delete(key: K): boolean {
+      const i = this._keys.indexOf(key);
+      if (i !== -1) { this._keys.splice(i, 1); this._values.splice(i, 1); return true; }
+      return false;
+    }
+    clear(): void { this._keys = []; this._values = []; }
+    forEach(callback: (value: V, key: K, map: any) => void, thisArg?: any): void {
+      for (let i = 0; i < this._keys.length; i++) callback.call(thisArg, this._values[i], this._keys[i], this);
+    }
+    *[Symbol.iterator](): Iterator<[K, V]> {
+      for (let i = 0; i < this._keys.length; i++) yield [this._keys[i], this._values[i]];
+    }
+    entries() { return this[Symbol.iterator](); }
+    keys() { return this._keys.values(); }
+    values() { return this._values.values(); }
+  };
+}
+
+// Set polyfill (Chrome 38 lacks Set - Chrome 43+)
+if (typeof Set === 'undefined') {
+  (self as any).Set = class SetPolyfill<T> {
+    private _values: T[] = [];
+    constructor(iterable?: Iterable<T>) {
+      if (iterable) for (const v of iterable) this.add(v);
+    }
+    get size(): number { return this._values.length; }
+    has(value: T): boolean { return this._values.indexOf(value) !== -1; }
+    add(value: T): this { if (!this.has(value)) this._values.push(value); return this; }
+    delete(value: T): boolean { const i = this._values.indexOf(value); if (i !== -1) { this._values.splice(i, 1); return true; } return false; }
+    clear(): void { this._values = []; }
+    forEach(callback: (value: T, value2: T, set: any) => void, thisArg?: any): void {
+      for (let i = 0; i < this._values.length; i++) callback.call(thisArg, this._values[i], this._values[i], this);
+    }
+    *[Symbol.iterator](): Iterator<T> { for (const v of this._values) yield v; }
+    keys() { return this._values.values(); }
+    values() { return this._values.values(); }
+    entries() { return this[Symbol.iterator](); }
+  };
+}
+
+// WeakMap polyfill (Chrome 38 lacks WeakMap - Chrome 42+)
+// Uses a hidden property on the key object (approximation, not true weak references)
+if (typeof WeakMap === 'undefined') {
+  (self as any).WeakMap = class WeakMapPolyfill<K extends object, V> {
+    private data: any;
+    constructor(iterable?: Iterable<[K, V]>) {
+      this.data = new (self as any).Map();
+      if (iterable) for (const [k, v] of iterable) this.set(k, v);
+    }
+    has(key: K): boolean { return this.data.has(key); }
+    get(key: K): V | undefined { return this.data.get(key); }
+    set(key: K, value: V): this { this.data.set(key, value); return this; }
+    delete(key: K): boolean { return this.data.delete(key); }
+  };
+}
+
+// WeakSet polyfill (Chrome 38 lacks WeakSet - Chrome 42+)
+if (typeof WeakSet === 'undefined') {
+  (self as any).WeakSet = class WeakSetPolyfill<T extends object> {
+    private data: any;
+    constructor(iterable?: Iterable<T>) {
+      this.data = new (self as any).Map();
+      if (iterable) for (const v of iterable) this.add(v);
+    }
+    has(value: T): boolean { return this.data.has(value); }
+    add(value: T): this { this.data.set(value, true); return this; }
+    delete(value: T): boolean { return this.data.delete(value); }
+  };
+}
+
+// Array.prototype.includes (Chrome 47+)
+if (!Array.prototype.includes) {
+  Array.prototype.includes = function (searchElement: any, fromIndex?: number): boolean {
+    const o = Object(this);
+    const len = o.length >>> 0;
+    if (len === 0) return false;
+    const n = (fromIndex !== undefined ? fromIndex : 0) | 0;
+    let k = Math.max(n >= 0 ? n : len - Math.abs(n), 0);
+    for (; k < len; k++) {
+      if (k in o && o[k] === searchElement) return true;
+    }
+    return false;
+  };
+}
+
+// String.prototype.includes (Chrome 47+)
+if (!String.prototype.includes) {
+  String.prototype.includes = function (searchString: string, position?: number): boolean {
+    return this.indexOf(searchString, position) !== -1;
+  };
+}
+
+// String.prototype.startsWith (Chrome 41+)
+if (!String.prototype.startsWith) {
+  String.prototype.startsWith = function (searchString: string, position?: number): boolean {
+    const str = String(this);
+    const pos = position == null ? 0 : Math.max(0, Math.min(position | 0, str.length));
+    return str.indexOf(searchString, pos) === pos;
+  };
+}
+
+// String.prototype.endsWith (Chrome 41+)
+if (!String.prototype.endsWith) {
+  String.prototype.endsWith = function (searchString: string, length?: number): boolean {
+    const str = String(this);
+    const end = length == null || length > str.length ? str.length : length | 0;
+    const searchStr = String(searchString);
+    return str.slice(end - searchStr.length, end) === searchStr;
+  };
+}
+
+// Array.prototype.find (Chrome 45+)
+if (!Array.prototype.find) {
+  Array.prototype.find = function <T>(callback: (value: T, index: number, array: T[]) => boolean, thisArg?: any): T | undefined {
+    const o = Object(this);
+    const len = o.length >>> 0;
+    if (typeof callback !== 'function') throw new TypeError(callback + ' is not a function');
+    for (let i = 0; i < len; i++) {
+      if (i in o) {
+        const val = o[i];
+        if (callback.call(thisArg, val, i, o)) return val;
+      }
+    }
+    return undefined;
+  };
+}
+
+// Array.prototype.findIndex (Chrome 45+)
+if (!Array.prototype.findIndex) {
+  Array.prototype.findIndex = function <T>(callback: (value: T, index: number, array: T[]) => boolean, thisArg?: any): number {
+    const o = Object(this);
+    const len = o.length >>> 0;
+    if (typeof callback !== 'function') throw new TypeError(callback + ' is not a function');
+    for (let i = 0; i < len; i++) {
+      if (i in o) {
+        const val = o[i];
+        if (callback.call(thisArg, val, i, o)) return i;
+      }
+    }
+    return -1;
+  };
+}
+
+// Array.from (Chrome 45+)
+if (!Array.from) {
+  Array.from = function (arrayLike: any, mapFn?: (v: any, k: number) => any, thisArg?: any): any[] {
+    const result: any[] = [];
+    if (arrayLike && typeof arrayLike[Symbol.iterator] === 'function') {
+      for (const item of arrayLike) result.push(item);
+    } else if (arrayLike && typeof arrayLike.length === 'number') {
+      const len = arrayLike.length >>> 0;
+      for (let i = 0; i < len; i++) result.push(arrayLike[i]);
+    }
+    if (mapFn) {
+      for (let i = 0; i < result.length; i++) result[i] = mapFn.call(thisArg, result[i], i);
+    }
+    return result;
+  };
+}
+
+// Element.closest() (Chrome 41+)
+if (typeof Element !== 'undefined' && !Element.prototype.closest) {
+  Element.prototype.closest = function (selector: string): Element | null {
+    let el: Element | null = this;
+    while (el) {
+      if (el.matches?.(selector)) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+}
+
+// Element.matches() (Chrome 33+ as webkitMatchesSelector, standard in 34+)
+if (typeof Element !== 'undefined' && !Element.prototype.matches) {
+  const proto = Element.prototype as any;
+  proto.matches =
+    proto.webkitMatchesSelector ||
+    proto.mozMatchesSelector ||
+    proto.msMatchesSelector ||
+    function (this: Element, selector: string): boolean {
+      const doc = this.ownerDocument;
+      const matches = doc.querySelectorAll(selector);
+      for (let i = 0; i < matches.length; i++) {
+        if (matches[i] === this) return true;
+      }
+      return false;
+    };
+}
+
+// NodeList.prototype.forEach (Chrome 51+)
+if (typeof NodeList !== 'undefined' && !NodeList.prototype.forEach) {
+  NodeList.prototype.forEach = function (callback: any, thisArg?: any): void {
+    for (let i = 0; i < this.length; i++) {
+      callback.call(thisArg, this[i], i, this);
+    }
+  };
+}

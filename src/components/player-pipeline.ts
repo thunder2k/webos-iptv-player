@@ -592,7 +592,9 @@ export class PlayerPipeline {
     const videoEl = this.videoEl;
     if (!videoEl) return;
     // A <source> with an explicit MIME tells the player the format even when the
-    // URL has no file extension.
+    // URL has no file extension. On webOS 3.9 the native player needs this hint
+    // just as much as any other engine — the direct-src path drops the MIME
+    // type and HLS/TS streams with ambiguous URLs fail to load.
     videoEl.removeAttribute('src');
     videoEl.innerHTML = '';
     const source = document.createElement('source');

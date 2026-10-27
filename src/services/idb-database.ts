@@ -2,9 +2,6 @@ import { createLogger } from '../utils/logger';
 
 const log = createLogger('PersistenceDB');
 
-const DB_NAME = 'iptv';
-const DB_VERSION = 6;
-
 export const EPG_STORE = 'epg-cache';
 export const CATALOG_STORE = 'catalog-cache';
 export const SUBTITLE_STORE = 'subtitle-cache';
@@ -41,106 +38,15 @@ export function cacheKeyPath(store: CacheStore): 'url' | 'key' {
   return store === EPG_STORE ? 'url' : 'key';
 }
 
-function ensureCacheIndexes(store: IDBObjectStore): void {
-  if (!store.indexNames.contains('expiresAt')) store.createIndex('expiresAt', 'expiresAt');
-  if (!store.indexNames.contains('lastAccessedAt')) {
-    store.createIndex('lastAccessedAt', 'lastAccessedAt');
-  }
-}
-
 export function openPersistenceDb(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve) => {
-    if (typeof indexedDB === 'undefined') {
-      log.warn(
-        'IndexedDB unavailable',
-        'event=persistence.db.unavailable',
-        'operation=open',
-      );
-      resolve(null);
-      return;
-    }
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = (event) => {
-      log.info(
-        'Upgrading persistence database',
-        'event=persistence.db.upgrade',
-        `from=${event.oldVersion}`,
-        `to=${DB_VERSION}`,
-      );
-      const db = req.result;
-      const tx = req.transaction;
-      if (!tx) return;
-      for (const storeName of CACHE_STORES) {
-        let store: IDBObjectStore;
-        if (!db.objectStoreNames.contains(storeName)) {
-          store = db.createObjectStore(storeName, {
-            keyPath: cacheKeyPath(storeName),
-          });
-        } else {
-          store = tx.objectStore(storeName);
-        }
-        ensureCacheIndexes(store);
-      }
-      if (!db.objectStoreNames.contains(CACHE_META_STORE)) {
-        db.createObjectStore(CACHE_META_STORE, { keyPath: 'category' });
-      }
-      for (const storeName of USER_DATA_STORES) {
-        if (db.objectStoreNames.contains(storeName)) continue;
-        const store = db.createObjectStore(storeName, { keyPath: 'key' });
-        if (storeName === 'watchlist') store.createIndex('scope', 'scope');
-        if (storeName === 'playback-progress') {
-          store.createIndex('expiresAt', 'expiresAt');
-          store.createIndex('updatedAt', 'updatedAt');
-        }
-        if (storeName === 'recently-watched') store.createIndex('updatedAt', 'updatedAt');
-      }
-      if (!db.objectStoreNames.contains(USER_META_STORE)) {
-        db.createObjectStore(USER_META_STORE, { keyPath: 'key' });
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      db.onversionchange = () => {
-        db.close();
-        dbPromise = null;
-      };
-      // The browser can close a connection on its own — e.g. suspending an
-      // open connection when webOS backgrounds the app. Without this, every
-      // read/write after that keeps reusing the dead connection and fails
-      // with "The database connection is closing" until the app relaunches.
-      // Clearing the cache here lets the next call reconnect instead.
-      db.onclose = () => {
-        log.warn(
-          'Connection closed unexpectedly',
-          'event=persistence.db.closed.unexpected',
-          'operation=open',
-        );
-        dbPromise = null;
-      };
-      resolve(db);
-    };
-    req.onerror = () => {
-      log.warn(
-        'Open failed',
-        'event=persistence.db.open.failed',
-        'operation=open',
-        req.error,
-      );
-      dbPromise = null;
-      resolve(null);
-    };
-    req.onblocked = () => {
-      log.warn(
-        'Open blocked',
-        'event=persistence.db.open.blocked',
-        'operation=open',
-      );
-      dbPromise = null;
-      resolve(null);
-    };
-  });
-  return dbPromise;
+  // Force localStorage-only mode on webOS 3.9 (Chromium 38) where IndexedDB is unreliable
+  log.warn(
+    'Forcing localStorage-only mode (IndexedDB disabled)',
+    'event=persistence.db.forced_localstorage',
+    'operation=open',
+  );
+  return Promise.resolve(null);
 }
 
 export function transactionDone(

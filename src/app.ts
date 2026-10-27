@@ -103,10 +103,30 @@ class App {
   private epgRefreshIntervalMs: number | null | undefined;
   private epgChannelReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // How long to wait for StorageService.init() before giving up and
+  // continuing with localStorage-only mode. webOS 6's IndexedDB can fail to
+  // fire open events, which would otherwise block app startup forever.
+  private static readonly STORAGE_INIT_TIMEOUT_MS = 5000;
+
   async init(): Promise<void> {
     const done = log.time('init');
     log.info('Initializing app');
-    await StorageService.init();
+    try {
+      await Promise.race([
+        StorageService.init(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error('StorageService.init timeout')),
+            App.STORAGE_INIT_TIMEOUT_MS,
+          ),
+        ),
+      ]);
+    } catch (err) {
+      log.warn(
+        'StorageService.init() failed or timed out; continuing with localStorage-only',
+        err,
+      );
+    }
     ParentalControlService.reload();
     StorageService.setPlaylistsReplacedHandler((previous, next) =>
       ParentalControlService.reviewChangedSources(previous, next));
@@ -373,15 +393,19 @@ class App {
     // Register a retail-safe callback immediately. If Developer Mode is
     // detected below, the same named activities are replaced with alerts.
     ReminderService.reschedulePending();
+    // Start the bundled service BEFORE loading data so its fetch_url Luna
+    // endpoint is available for playlist loading on webOS 3.9, where neither
+    // fetch nor XMLHttpRequest exist. On desktop this is a no-op.
+    const bundledServiceStarted = await this.startBundledService();
     await this.loadData();
     // Cold launch from a "Watch now" alert: channels are loaded now, so tune.
     this.handleLaunchParams(this.coldLaunchParams());
-    // Spawning the service process can synchronously stall Luna on a cold TV.
-    // Keep LAN setup off the critical path so cached channels render first.
-    const bundledServiceReady = this.startBundledService();
-    void bundledServiceReady
-      .then((started) => started ? this.finishBundledServiceInit() : undefined)
-      .catch(err => log.error('Bundled service initialization failed:', err));
+    // Finish bundled-service init (serviceEvents subscription, dev-mode check,
+    // settings refresh) now that channels have loaded.
+    if (bundledServiceStarted) {
+      await this.finishBundledServiceInit().catch(err =>
+        log.error('Late bundled service initialization failed:', err));
+    }
   }
 
   /**
@@ -893,7 +917,7 @@ class App {
       }
 
       const loadingText = $('#loading-text');
-      if (loadingText) loadingText.textContent = t('app.loadingChannels');
+      if (loadingText) loadingText.textContent = `${t('app.loadingChannels')} v${CONFIG.VERSION}`;
       let lastProgressAt = 0;
       await PlaylistService.load(progress => {
         if (!loadingText) return;
@@ -982,7 +1006,7 @@ class App {
       log.error('loadData failed:', err);
       this.showView('settings');
       this.settings.render();
-      showToast(t('app.loadFailed'));
+      showToast(err instanceof Error ? err.message : t('app.loadFailed'));
     } finally {
       this.loadingData = false;
       hide(this.views.loading);
@@ -1006,6 +1030,15 @@ class App {
 
   private isCurrentView(name: ViewName): boolean {
     return this.viewStack[this.viewStack.length - 1] === name;
+  }
+
+  /** Last-resort recovery: show the channels view if init() is stuck. */
+  emergencyShowChannels(): void {
+    try {
+      hide(this.views.loading);
+      this.showView('channels');
+      this.channelList?.render();
+    } catch {}
   }
 
   private leaveParentalControls(): void {
@@ -1834,9 +1867,99 @@ class App {
   }
 }
 
+// Top-level startup watchdog: if init() doesn't settle within this window,
+// something in the boot chain (IndexedDB, playlist load, etc.) is hung on this
+// device. Force the channels view so the app isn't left stuck on the loading
+// splash. webOS 6's Chromium 79 can have quirks with IndexedDB or module
+// loading that we can't fully predict, so this is a last-resort recovery.
+const APP_INIT_TIMEOUT_MS = 15000;
+
+// Show uncaught JS errors on screen instead of a silent black screen.
+window.onerror = (message: string | Event, source?: string, lineno?: number, colno?: number, error?: Error) => {
+  const banner = document.getElementById('dbg-banner');
+  if (banner) {
+    const msg = typeof message === 'string' ? message : String(message);
+    const stack = error?.stack || '';
+    const loc = source ? ` at ${source}:${lineno}:${colno}` : '';
+    banner.textContent = `JS ERROR: ${msg}${loc}\n${stack}`;
+    banner.style.background = '#f00';
+    banner.style.color = '#fff';
+    banner.style.whiteSpace = 'pre-wrap';
+    banner.style.fontSize = '24px';
+    banner.style.padding = '20px';
+  }
+  return false;
+};
+
+window.addEventListener('unhandledrejection', (e: PromiseRejectionEvent) => {
+  const banner = document.getElementById('dbg-banner');
+  if (banner) {
+    const reason = e.reason;
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : '';
+    banner.textContent = `PROMISE REJECTION: ${msg}\n${stack}`;
+    banner.style.background = '#f00';
+    banner.style.color = '#fff';
+    banner.style.whiteSpace = 'pre-wrap';
+    banner.style.fontSize = '24px';
+    banner.style.padding = '20px';
+  }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
+  // Debug: stamp the loading screen with the app version so the user can
+  // confirm on-device that the new bundle is running (not a stale copy).
+  const versionText = $('#loading-text');
+  if (versionText) versionText.textContent = `Loading… v${CONFIG.VERSION}`;
   installGlobalErrorHandlers();
   logEnvironment(CONFIG.VERSION);
-  const app = new App();
-  app.init().catch(err => log.error('App init failed:', err));
+  log.info('App module loaded, starting init');
+
+  // Wrap in try-catch to catch synchronous errors during App construction/init
+  let app: App;
+  try {
+    app = new App();
+  } catch (err) {
+    log.error('App constructor failed:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : '';
+    const banner = document.getElementById('dbg-banner');
+    if (banner) {
+      banner.textContent = `CONSTRUCTOR ERROR: ${message}\n${stack}`;
+      banner.style.background = '#f00';
+      banner.style.color = '#fff';
+      banner.style.whiteSpace = 'pre-wrap';
+      banner.style.fontSize = '24px';
+      banner.style.padding = '20px';
+    }
+    return;
+  }
+
+  const initPromise = Promise.race([
+    app.init(),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('App init timeout')), APP_INIT_TIMEOUT_MS),
+    ),
+  ]);
+  initPromise.then(() => {
+    const banner = document.getElementById('dbg-banner');
+    if (banner) banner.style.display = 'none';
+  }).catch((err: unknown) => {
+    log.error('App init failed or timed out:', err);
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : '';
+    const banner = document.getElementById('dbg-banner');
+    if (banner) {
+      banner.textContent = `INIT ERROR: ${message}\n${stack}`;
+      banner.style.background = '#f00';
+      banner.style.color = '#fff';
+      banner.style.whiteSpace = 'pre-wrap';
+      banner.style.fontSize = '24px';
+      banner.style.padding = '20px';
+    }
+    // Last resort: try to switch to channels so the user sees the UI.
+    try {
+      (app as { emergencyShowChannels?: () => void }).emergencyShowChannels?.();
+    } catch {}
+  });
 });

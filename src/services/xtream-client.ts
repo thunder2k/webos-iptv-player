@@ -292,6 +292,7 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
         };
       } catch (err) {
         if (isXtreamRequestCancelled(err)) throw err;
+        if (typeof window !== 'undefined') (window as any).__debugXtreamCatalogError = String(err);
         return { available: false, streams: [] };
       }
     },
