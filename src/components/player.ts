@@ -436,6 +436,12 @@ export class Player {
     fresh.muted = !!old.muted;
     fresh.volume = Number.isFinite(old.volume) ? old.volume : 1;
     fresh.playbackRate = Number.isFinite(old.playbackRate) ? old.playbackRate : 1;
+    // Preserve webOS-critical attributes on the replacement element so native
+    // playback keeps working after a suspend/resume or stall recovery.
+    fresh.crossOrigin = old.crossOrigin;
+    fresh.setAttribute('playsinline', old.getAttribute('playsinline') ?? '');
+    fresh.setAttribute('webkit-playsinline', old.getAttribute('webkit-playsinline') ?? '');
+    fresh.setAttribute('controlslist', old.getAttribute('controlslist') ?? '');
     this.bindVideoEvents(fresh);
     old.parentNode!.replaceChild(fresh, old);
     this.videoEl = fresh;

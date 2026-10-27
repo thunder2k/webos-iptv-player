@@ -258,6 +258,22 @@ export class PlayerPipeline {
     // probe; only a cold ambiguous route pays the bounded classification cost.
     if (isWebOS()) {
       if (opts?.direct) {
+        const Hls = win.__Hls as HlsType | undefined;
+        if (Hls?.isSupported()) {
+          const mime = containerMime(url);
+          log.info('Selected hls.js playback for webOS VOD', 'event=playback.path.hls',
+            this.callbacks.playbackLabel(token),
+            'reason=webos-vod', 'url=', safeUrl,
+            '| webOS hls.js VOD | native MIME fallback', mime || '(sniffed)');
+          void this.loadWithHls(url, extras, token, () => {
+            if (token !== this.loadToken || !this.videoEl) return;
+            log.info('hls.js failed; falling back to webOS native playback',
+              'event=playback.path.native.fallback', this.callbacks.playbackLabel(token),
+              'url=', safeUrl, '| webOS native VOD fallback | MIME', mime || '(sniffed)');
+            this.playNative(url, mime);
+          });
+          return;
+        }
         const mime = containerMime(url);
         log.info('Selected webOS native playback', 'event=playback.path.native',
           this.callbacks.playbackLabel(token),
@@ -588,29 +604,16 @@ export class PlayerPipeline {
     });
   }
 
-  private playNative(url: string, mime: string): void {
+  private playNative(url: string, _mime: string): void {
     const videoEl = this.videoEl;
     if (!videoEl) return;
-    // A <source> with an explicit MIME tells the player the format even when the
-    // URL has no file extension. On webOS 3.9 the native player needs this hint
-    // just as much as any other engine — the direct-src path drops the MIME
-    // type and HLS/TS streams with ambiguous URLs fail to load.
+    // webOS 3.9's native player does not reliably honor <source> elements.
+    // Always set src directly (matching open-iptv-smarters' loadNative()) and
+    // let the TV sniff the container from the response. The mime hint is kept
+    // for logging only.
     videoEl.removeAttribute('src');
     videoEl.innerHTML = '';
-    if (!mime) {
-      // No MIME type hint — set src directly so the native player sniffs the
-      // container from the response (used for mkv/avi/mov/webm VOD).
-      videoEl.src = url;
-      videoEl.load();
-      videoEl.play().catch(e => log.warn('Native play() rejected',
-        'event=playback.play.rejected',
-        this.videoLabel(videoEl), 'path=native', this.callbacks.mediaState(videoEl), e));
-      return;
-    }
-    const source = document.createElement('source');
-    source.src = url;
-    source.type = mime;
-    videoEl.appendChild(source);
+    videoEl.src = url;
     videoEl.load();
     videoEl.play().catch(e => log.warn('Native play() rejected',
       'event=playback.play.rejected',
@@ -621,6 +624,7 @@ export class PlayerPipeline {
     url: string,
     extras: Record<string, string> | null,
     loadToken: number,
+    onFallback?: () => void,
   ): void {
     if (!this.videoEl) return;
     const Hls = win.__Hls as HlsType | undefined;
@@ -676,6 +680,12 @@ export class PlayerPipeline {
           { type: data.type, details: data.details, fatal: data.fatal });
         if (!data.fatal) return;
         if (this.hlsRecoveries >= CONFIG.PLAYER.HLS_MAX_RECOVERIES) {
+          if (onFallback) {
+            log.warn('hls.js unrecoverable; falling back to native playback',
+              'event=playback.hls.fallback.native', this.callbacks.playbackLabel(loadToken));
+            onFallback();
+            return;
+          }
           this.callbacks.onError();
           return;
         }
@@ -696,8 +706,12 @@ export class PlayerPipeline {
         }
       });
     } catch (error) {
-      log.warn('hls.js initialization failed; using direct playback',
+      log.warn('hls.js initialization failed',
         'event=playback.hls.init.failed', this.callbacks.playbackLabel(loadToken), error);
+      if (onFallback) {
+        onFallback();
+        return;
+      }
       this.videoEl.src = url;
       this.videoEl.play().catch(() => {});
     }
