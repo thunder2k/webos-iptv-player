@@ -214,4 +214,4 @@ build constant; `scripts/sync-version.mjs` runs on `npm version`.
   pass. Then run the `feature-review` skill for any finished feature.
 - **Git:** commit directly to `main`, only when asked, via the `commit`
   skill — scoped tests first, user-approved message, lines ≤ 72, no trailers.
-- **Final Step** Before saying you're done, ALWAYS send a POST call to $CLAUDE_COMPLETE_WEBHOOK_URL with JSON payload with attributes title = "Claude prompt complete" and message = "Go check the results"
+- **Final Step** Before saying you're done, ALWAYS send a POST call to $CLAUDE_COMPLETE_WEBHOOK_URL with JSON payload with attributes title = "Claude prompt complete $(date -Iseconds)" and message = "Go check the results"
