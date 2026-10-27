@@ -19,7 +19,10 @@ export function containerMime(url: string): string {
     case 'mov':
     case 'webm':
       return '';
-    default: return '';
+    // An extension-less or unknown-extension VOD URL still needs a MIME hint
+    // so webOS 3.9's native player doesn't skip the <source> element. MP4 is
+    // the safest default for progressive VOD.
+    default: return 'video/mp4';
   }
 }
 

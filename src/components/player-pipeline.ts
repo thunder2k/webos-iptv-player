@@ -597,9 +597,19 @@ export class PlayerPipeline {
     // type and HLS/TS streams with ambiguous URLs fail to load.
     videoEl.removeAttribute('src');
     videoEl.innerHTML = '';
+    if (!mime) {
+      // No MIME type hint — set src directly so the native player sniffs the
+      // container from the response (used for mkv/avi/mov/webm VOD).
+      videoEl.src = url;
+      videoEl.load();
+      videoEl.play().catch(e => log.warn('Native play() rejected',
+        'event=playback.play.rejected',
+        this.videoLabel(videoEl), 'path=native', this.callbacks.mediaState(videoEl), e));
+      return;
+    }
     const source = document.createElement('source');
     source.src = url;
-    if (mime) source.type = mime;
+    source.type = mime;
     videoEl.appendChild(source);
     videoEl.load();
     videoEl.play().catch(e => log.warn('Native play() rejected',

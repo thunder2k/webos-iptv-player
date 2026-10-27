@@ -124,9 +124,12 @@ describe('sniffStreamContentType', () => {
 });
 
 describe('containerMime', () => {
-  it('never treats an MPD as a progressive container', () => {
-    expect(containerMime('http://host/a.mpd')).toBe('');
+  it('maps known progressive extensions to MIME types', () => {
     expect(containerMime('http://host/a.mp4')).toBe('video/mp4');
+    expect(containerMime('http://host/a.m4v')).toBe('video/mp4');
+    expect(containerMime('http://host/a.ts')).toBe('video/mp2t');
+    expect(containerMime('http://host/a.MP4')).toBe('video/mp4');
+    expect(containerMime('http://host/a.mp4?token=1')).toBe('video/mp4');
   });
 
   it('lets webOS sniff containers without reliable MIME recognition', () => {
@@ -134,5 +137,11 @@ describe('containerMime', () => {
     expect(containerMime('http://host/a.avi')).toBe('');
     expect(containerMime('http://host/a.mov')).toBe('');
     expect(containerMime('http://host/a.webm')).toBe('');
+  });
+
+  it('gives extension-less and unknown VOD URLs an MP4 hint', () => {
+    expect(containerMime('http://host/a')).toBe('video/mp4');
+    expect(containerMime('http://host/a?token=1')).toBe('video/mp4');
+    expect(containerMime('http://host/a.mpd')).toBe('video/mp4');
   });
 });
