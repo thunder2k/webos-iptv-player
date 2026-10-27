@@ -46,6 +46,36 @@ export class Series extends CatalogView<SeriesCategory, SeriesItem> {
 
   constructor(container: HTMLElement, handlers: CatalogHandlers) {
     super(container, handlers);
+    // Direct click handling for season/watchlist buttons on the detail layer.
+    // Mirrors open-iptv-smarters: Magic Remote OK fires a click event that may
+    // not route through the key handler's select flow on Chromium 38 because
+    // that flow keys off this.nav.focused rather than the clicked element.
+    // e.stopPropagation() prevents the global click handler from double-firing.
+    this.layer('detail').addEventListener('click', (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-season]');
+      if (target) {
+        e.stopPropagation();
+        this.selectSeason(Number(target.dataset.season));
+        return;
+      }
+      const watchlist = (e.target as HTMLElement).closest<HTMLElement>('[data-action="watchlist"]');
+      if (watchlist) {
+        e.stopPropagation();
+        this.toggleWatchlist();
+        return;
+      }
+    });
+    // Direct click handling for series tiles in browse/grid modes. Same
+    // rationale as above: on Chromium 38 a programmatic click may not set
+    // this.nav.focused to the clicked tile, so onSelect() never opens the
+    // detail. Handle the click here instead, bypassing the nav.focused chain.
+    this.container.addEventListener('click', (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id]');
+      if (!target || this.mode === 'detail') return;
+      e.stopPropagation();
+      const item = this.findItem(target.dataset.categoryId ?? '', target.dataset.itemId ?? '');
+      if (item) void this.openDetail(item);
+    });
   }
 
   protected loadCategories(
@@ -336,7 +366,7 @@ export class Series extends CatalogView<SeriesCategory, SeriesItem> {
             ${info?.cast ? html`<div class="detail-cast"><span class="detail-label">${t('catalog.cast')}</span> ${info.cast}</div>` : ''}
             ${info?.director ? html`<div class="detail-cast"><span class="detail-label">${t('catalog.director')}</span> ${info.director}</div>` : ''}
             <div class="detail-actions">
-              <button class="detail-btn" data-focusable data-key="watchlist" data-action="watchlist">
+              <button class="detail-btn" type="button" data-focusable data-key="watchlist" data-action="watchlist">
                 <span class="detail-btn-icon">${raw(watchlistIcon(watchlisted))}</span>
                 <span>${t(watchlisted ? 'catalog.removeWatchlist' : 'catalog.addWatchlist')}</span>
               </button>
@@ -351,7 +381,7 @@ export class Series extends CatalogView<SeriesCategory, SeriesItem> {
                   <div class="series-seasons">
                     ${info.seasons.map((n) => html`
                       <button class="series-season-btn ${n === this.selectedSeason ? 'active' : ''}"
-                              data-focusable data-key="season:${n}" data-season="${n}">${t('catalog.season', { number: n })}</button>
+                              type="button" data-focusable data-key="season:${n}" data-season="${n}">${t('catalog.season', { number: n })}</button>
                     `)}
                   </div>
                 `}
