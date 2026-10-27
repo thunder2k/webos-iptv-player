@@ -224,11 +224,18 @@ export class SpatialNav {
         && elapsed >= 0
         && elapsed <= CONFIG.NAVIGATION.FOCUS_REPEAT_WINDOW_MS;
       this.lastScrollFocusAt = now;
-      el.scrollIntoView({
-        block: 'nearest',
-        inline: 'nearest',
-        behavior: repeated ? 'instant' : 'auto',
-      });
+      try {
+        el.scrollIntoView({
+          block: 'nearest',
+          inline: 'nearest',
+          behavior: repeated ? 'instant' : 'auto',
+        });
+      } catch {
+        // Chromium 38 (webOS 3.9) rejects an options object passed to the
+        // native scrollIntoView; the polyfill doesn't install because
+        // style.scrollBehavior reports as a string ('') on that engine.
+        // Focus is already recorded above; skipping scroll is safe.
+      }
     } else {
       this.lastScrollFocusAt = 0;
     }
