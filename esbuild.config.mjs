@@ -44,6 +44,7 @@ function transformStylesheets(outDir) {
 mkdirSync('dist', { recursive: true });
 const indexHtml = readFileSync('index.html', 'utf8');
 const previewLibsMarker = '<!-- preview-libs -->';
+const webosLibsMarker = '<!-- webos-libs -->';
 const buildTime = new Date().toISOString().replace('T', ' ').substring(0, 19);
 let outputIndexHtml = indexHtml
   .replace('__APP_VERSION__', version)
@@ -51,6 +52,10 @@ let outputIndexHtml = indexHtml
   .replace(
     previewLibsMarker,
     isPreview ? '<script src="js/preview-libs.js"></script>' : '',
+  )
+  .replace(
+    webosLibsMarker,
+    isPreview ? '' : '<script src="js/webos-libs.js"></script>',
   );
 if (outputIndexHtml === indexHtml) {
   throw new Error('Build could not find the preview library marker in index.html.');
@@ -150,6 +155,16 @@ if (isPreview) {
   });
 } else {
   rmSync('dist/js/preview-libs.js', { force: true });
+  // webOS 3.9: bundle hls.js as a global for VOD playback when native MP4 fails.
+  await esbuild.build({
+    entryPoints: ['src/webos-libs.ts'],
+    bundle: true,
+    format: FORMAT,
+    target: TARGET,
+    minify: true,
+    outfile: 'dist/js/webos-libs.js',
+    write: true,
+  });
 }
 
 console.log('Build complete.');

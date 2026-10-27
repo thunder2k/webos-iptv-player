@@ -31,7 +31,7 @@
 </head>
 <body>
   <div id="dbg-banner" style="position:absolute;top:0;left:0;right:0;background:#ff0;color:#000;font-size:40px;padding:30px;z-index:999999;">webOS 3.9 Build v__APP_VERSION__ __BUILD_TIME__</div>
-  <video id="video-player" autoplay></video>
+  <video id="video-player" autoplay crossorigin="anonymous" playsinline webkit-playsinline></video>
 
   <div id="view-loading" class="view">
     <div class="loading-container">
@@ -64,6 +64,7 @@
   <div id="view-search" class="view hidden"></div>
 
   <!-- preview-libs -->
+  <!-- webos-libs -->
   <script>
 window.onerror=function(msg,url,line){var b=document.getElementById('dbg-banner');if(b){b.textContent='JS ERROR: '+String(msg);b.style.background='#f00';b.style.color='#fff';}return false;};
 </script>

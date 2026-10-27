@@ -139,9 +139,16 @@ describe('containerMime', () => {
     expect(containerMime('http://host/a.webm')).toBe('');
   });
 
-  it('returns no MIME for extension-less or unknown VOD URLs — video.src is set directly', () => {
-    expect(containerMime('http://host/a')).toBe('');
-    expect(containerMime('http://host/a?token=1')).toBe('');
+  it('defaults extension-less VOD URLs to video/mp4 — native player gets a MIME hint', () => {
+    expect(containerMime('http://host/a')).toBe('video/mp4');
+    expect(containerMime('http://host/a?token=1')).toBe('video/mp4');
+  });
+
+  it('returns no MIME for containers webOS rejects up front', () => {
+    expect(containerMime('http://host/a.mkv')).toBe('');
+    expect(containerMime('http://host/a.avi')).toBe('');
+    expect(containerMime('http://host/a.mov')).toBe('');
+    expect(containerMime('http://host/a.webm')).toBe('');
     expect(containerMime('http://host/a.mpd')).toBe('');
   });
 });

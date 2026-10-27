@@ -6,11 +6,10 @@ export function extFromUrl(url: string): string {
 }
 
 // Progressive-container MIME by file extension, for VOD played natively on webOS.
-// An unknown or extension-less URL returns '', and the caller then sets
-// `video.src` directly so the TV sniffs the container from the response — this
-// matches the working open-iptv-smarters approach for webOS 3.9 VOD playback,
-// where a <source> element with a guessed MIME type is rejected by the native
-// player.
+// Extension-less or unknown-extension URLs default to video/mp4 (the dominant
+// Xtream VOD container) so the native player gets a MIME type hint rather than
+// sniffing the response. Older webOS versions can reject MIME declarations for
+// mkv/avi/mov/webm before the native pipeline inspects the file.
 export function containerMime(url: string): string {
   switch (extFromUrl(url)) {
     case 'mp4': case 'm4v': return 'video/mp4';
@@ -22,9 +21,13 @@ export function containerMime(url: string): string {
     case 'mov':
     case 'webm':
       return '';
-    // Extension-less or unknown-extension VOD URLs: no MIME hint, so the
-    // caller sets video.src directly and lets webOS sniff the container.
-    default: return '';
+    // DASH manifests are not progressive containers — they go through
+    // streamUrlMime() instead, not containerMime().
+    case 'mpd':
+      return '';
+    // Extension-less or unknown-extension VOD URLs: assume MP4, the dominant
+    // container for Xtream VOD, so the native player gets a MIME type hint.
+    default: return 'video/mp4';
   }
 }
 
