@@ -6,8 +6,11 @@ export function extFromUrl(url: string): string {
 }
 
 // Progressive-container MIME by file extension, for VOD played natively on webOS.
-// An unknown or extension-less URL returns '', and the caller then omits the
-// `type` attribute so the TV sniffs the container itself.
+// An unknown or extension-less URL returns '', and the caller then sets
+// `video.src` directly so the TV sniffs the container from the response — this
+// matches the working open-iptv-smarters approach for webOS 3.9 VOD playback,
+// where a <source> element with a guessed MIME type is rejected by the native
+// player.
 export function containerMime(url: string): string {
   switch (extFromUrl(url)) {
     case 'mp4': case 'm4v': return 'video/mp4';
@@ -19,10 +22,9 @@ export function containerMime(url: string): string {
     case 'mov':
     case 'webm':
       return '';
-    // An extension-less or unknown-extension VOD URL still needs a MIME hint
-    // so webOS 3.9's native player doesn't skip the <source> element. MP4 is
-    // the safest default for progressive VOD.
-    default: return 'video/mp4';
+    // Extension-less or unknown-extension VOD URLs: no MIME hint, so the
+    // caller sets video.src directly and lets webOS sniff the container.
+    default: return '';
   }
 }
 

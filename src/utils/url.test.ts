@@ -139,9 +139,9 @@ describe('containerMime', () => {
     expect(containerMime('http://host/a.webm')).toBe('');
   });
 
-  it('gives extension-less and unknown VOD URLs an MP4 hint', () => {
-    expect(containerMime('http://host/a')).toBe('video/mp4');
-    expect(containerMime('http://host/a?token=1')).toBe('video/mp4');
-    expect(containerMime('http://host/a.mpd')).toBe('video/mp4');
+  it('returns no MIME for extension-less or unknown VOD URLs — video.src is set directly', () => {
+    expect(containerMime('http://host/a')).toBe('');
+    expect(containerMime('http://host/a?token=1')).toBe('');
+    expect(containerMime('http://host/a.mpd')).toBe('');
   });
 });
