@@ -116,6 +116,23 @@ describe('Movies browse + grid', () => {
     expect(container.querySelector('.movies-detail')?.textContent).toContain('Saved Movie');
   });
 
+  it('opens watchlist tile detail on click (no nav/hover needed)', async () => {
+    watchlistState.entries = [{
+      accountId: 'x1', kind: 'vod', itemId: '42', name: 'Saved Movie', poster: '',
+      rating: '', categoryId: '9', containerExtension: 'mkv', addedAt: 2,
+    }];
+    catalogMock.loadVodInfo.mockResolvedValue({
+      plot: '', cast: '', director: '', genre: '', releaseDate: '', durationSecs: 0,
+      poster: '', imdbId: '', tmdbId: '', year: 0,
+    });
+    const { view } = await openWith();
+    const tile = container.querySelector('[data-watchlist-item="42"]') as HTMLElement;
+    expect(tile).not.toBeNull();
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector('.movies-detail')?.textContent).toContain('Saved Movie');
+  });
+
   it('queues only the movies after one launched from the Watchlist rail', async () => {
     watchlistState.entries = [
       {
@@ -740,6 +757,57 @@ describe('Movies detail', () => {
     resume.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
     view.handleAction('select');
     expect(handlers.onPlayVod).toHaveBeenCalledWith(expect.objectContaining({ resumeSecs: 900 }));
+  });
+
+  it('plays movie on Play button click (no nav/hover needed)', async () => {
+    catalogMock.loadVodInfo.mockResolvedValue({
+      plot: '', cast: '', director: '', genre: '', releaseDate: '', durationSecs: 0,
+      poster: '', imdbId: '', tmdbId: '', year: 0,
+    });
+    const { handlers } = await openWith([{ id: '1', name: 'Cat A' }], [vod('10', 'Movie One')]);
+    const tile = container.querySelector('.catalog-tile[data-item-id="10"]') as HTMLElement;
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    const play = container.querySelector('[data-action="play"]') as HTMLElement;
+    play.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(handlers.onPlayVod).toHaveBeenCalledWith(expect.objectContaining({
+      itemId: '10', accountId: 'x1', kind: 'vod', resumeSecs: 0,
+      url: 'http://host:8080/movie/u/p/10.mp4',
+      watchlistQueue: undefined,
+    }));
+  });
+
+  it('resumes movie on Resume button click (no nav/hover needed)', async () => {
+    storageMock.getResume.mockReturnValue(
+      { accountId: 'x1', kind: 'vod', itemId: '10', name: 'Movie One', poster: '', position: 900, duration: 3600, updatedAt: 1 },
+    );
+    catalogMock.loadVodInfo.mockResolvedValue({
+      plot: '', cast: '', director: '', genre: '', releaseDate: '', durationSecs: 3600, poster: '', imdbId: '', tmdbId: '', year: 0,
+    });
+    const { handlers } = await openWith([{ id: '1', name: 'Cat A' }], [vod('10', 'Movie One')]);
+    const tile = container.querySelector('.catalog-tile[data-item-id="10"]') as HTMLElement;
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    const resume = container.querySelector('[data-action="resume"]') as HTMLElement;
+    expect(resume).not.toBeNull();
+    resume.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(handlers.onPlayVod).toHaveBeenCalledWith(expect.objectContaining({ resumeSecs: 900 }));
+  });
+
+  it('toggles watchlist on Watchlist button click (no nav/hover needed)', async () => {
+    catalogMock.loadVodInfo.mockResolvedValue({
+      plot: '', cast: '', director: '', genre: '', releaseDate: '', durationSecs: 0,
+      poster: '', imdbId: '', tmdbId: '', year: 0,
+    });
+    const { handlers } = await openWith([{ id: '1', name: 'Cat A' }], [vod('10', 'Movie One')]);
+    const tile = container.querySelector('.catalog-tile[data-item-id="10"]') as HTMLElement;
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    const watchlist = container.querySelector('[data-action="watchlist"]') as HTMLElement;
+    watchlist.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(storageMock.toggleWatchlist).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'x1', kind: 'vod', itemId: '10', name: 'Movie One',
+    }));
   });
 
   it('refreshes the detail actions when playback creates a resume point', async () => {

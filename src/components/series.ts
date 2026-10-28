@@ -64,16 +64,27 @@ export class Series extends CatalogView<SeriesCategory, SeriesItem> {
         this.toggleWatchlist();
         return;
       }
+      const episode = (e.target as HTMLElement).closest<HTMLElement>('[data-episode-id]');
+      if (episode) {
+        e.stopPropagation();
+        this.playEpisode(episode.dataset.episodeId ?? '');
+        return;
+      }
     });
     // Direct click handling for series tiles in browse/grid modes. Same
     // rationale as above: on Chromium 38 a programmatic click may not set
     // this.nav.focused to the clicked tile, so onSelect() never opens the
     // detail. Handle the click here instead, bypassing the nav.focused chain.
     this.container.addEventListener('click', (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id]');
-      if (!target || this.mode === 'detail') return;
+      const tile = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id], [data-resume-episode]');
+      if (!tile || this.mode === 'detail') return;
       e.stopPropagation();
-      const item = this.findItem(target.dataset.categoryId ?? '', target.dataset.itemId ?? '');
+      const resumeEpisode = tile.dataset.resumeEpisode;
+      if (resumeEpisode !== undefined) {
+        this.playResume(resumeEpisode);
+        return;
+      }
+      const item = this.findItem(tile.dataset.categoryId ?? '', tile.dataset.itemId ?? '');
       if (item) void this.openDetail(item);
     });
   }

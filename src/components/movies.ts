@@ -4,7 +4,7 @@ import { morph } from '../utils/morph';
 import { StorageService } from '../services/storage-service';
 import { loadVodCategories, loadVodStreams, loadVodInfo } from '../services/xtream-catalog';
 import { xtreamVodUrl } from '../utils/xtream-url';
-import { CatalogView } from './catalog-view';
+import { CatalogView, type CatalogHandlers } from './catalog-view';
 import { PLAY_ICON, watchlistIcon } from './icons';
 import { showToast } from './toast';
 import { t, tp } from '../i18n';
@@ -24,6 +24,33 @@ export class Movies extends CatalogView<VodCategory, VodItem> {
   private currentInfo: VodInfo | null = null;
   private openedFromWatchlist = false;
   private detailController: AbortController | null = null;
+
+  constructor(container: HTMLElement, handlers: CatalogHandlers) {
+    super(container, handlers);
+    // Direct click handling for tiles in browse/grid modes. On Chromium 38 a
+    // real click does not set this.nav.focused, so onSelect() never opens the
+    // detail. Handle the click here instead, bypassing the nav.focused chain.
+    this.container.addEventListener('click', (e: MouseEvent) => {
+      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id]');
+      if (!target || this.mode === 'detail') return;
+      e.stopPropagation();
+      const fromWatchlist = target.dataset.watchlistItem !== undefined;
+      const item = this.findItem(target.dataset.categoryId ?? '', target.dataset.itemId ?? '');
+      if (item) void this.openDetail(item, fromWatchlist);
+    });
+    // Direct click handling for Play / Resume / Watchlist buttons on the detail
+    // layer. Same rationale: a click may not set this.nav.focused, so
+    // onSelect() -> selectExtra() never fires. stopPropagation() prevents the
+    // global click handler from double-firing select.
+    this.layer('detail').addEventListener('click', (e: MouseEvent) => {
+      const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action]');
+      if (!action) return;
+      e.stopPropagation();
+      if (action.dataset.action === 'play') this.play(false);
+      else if (action.dataset.action === 'resume') this.play(true);
+      else if (action.dataset.action === 'watchlist') this.toggleWatchlist();
+    });
+  }
 
   protected loadCategories(
     account: PlaylistEntry,

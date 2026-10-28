@@ -107,6 +107,20 @@ describe('Series browse + grid', () => {
     }));
   });
 
+  it('resumes episode on Continue rail tile click (no nav/hover needed)', async () => {
+    storageMock.getResumeList.mockReturnValue([
+      { accountId: 'x1', kind: 'episode', itemId: 'e1', name: 'Series One — S1E1 — Episode One', poster: '', ext: 'mkv', position: 300, duration: 1500, updatedAt: 1 },
+    ]);
+    const { handlers } = await openWith();
+    const tile = container.querySelector('.catalog-tile[data-resume-episode="e1"]') as HTMLElement;
+    expect(tile).not.toBeNull();
+    tile.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(handlers.onPlayVod).toHaveBeenCalledWith(expect.objectContaining({
+      itemId: 'e1', accountId: 'x1', kind: 'episode', resumeSecs: 300,
+      url: 'http://host:8080/series/u/p/e1.mkv',
+    }));
+  });
+
   it('shows a Watchlist rail from stored series snapshots', async () => {
     watchlistState.entries = [{
       accountId: 'x1', kind: 'series', itemId: 's9', name: 'Saved Series',
@@ -330,6 +344,20 @@ describe('Series detail', () => {
           watchlistOwner: { kind: 'series', itemId: 's1' },
         }),
       ],
+    }));
+  });
+
+  it('plays episode on episode row click (no nav/hover needed)', async () => {
+    catalogMock.loadSeriesInfo.mockResolvedValue(SERIES_INFO);
+    const { view, handlers } = await openWith();
+    await openDetail(view);
+    const row = container.querySelector('.episode-row[data-episode-id="e1"]') as HTMLElement;
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(handlers.onPlayVod).toHaveBeenCalledWith(expect.objectContaining({
+      itemId: 'e1', accountId: 'x1', kind: 'episode', resumeSecs: 0,
+      url: 'http://host:8080/series/u/p/e1.mp4',
+      title: expect.stringContaining('S1E1'),
+      watchlistOwner: { kind: 'series', itemId: 's1' },
     }));
   });
 
