@@ -1,0 +1,17 @@
+{
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "targets": {
+          "chrome": "38"
+        },
+        "exclude": [
+          "transform-typeof-symbol"
+        ]
+      }
+    ]
+  ],
+  "comments": false,
+  "compact": true
+}

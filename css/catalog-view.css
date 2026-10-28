@@ -96,6 +96,20 @@
 }
 .catalog-poster { width: 100%; height: 100%; object-fit: cover; display: block; }
 .catalog-poster-empty { display: flex; align-items: center; justify-content: center; font-size: 72px; color: var(--text-secondary); }
+/* Lazy tile poster: renders as a letter placeholder until the tile is focused,
+   then swaps in the full-resolution image. Keeps the decoded poster bitmap
+   count bounded on memory-constrained webOS 3.9. */
+.catalog-poster-lazy {
+  position: relative;
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--catalog-surface);
+}
+.catalog-poster-letter { font-size: 72px; color: var(--text-secondary); }
+.catalog-poster-img {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%; object-fit: cover; display: none;
+}
 .catalog-tile-name {
   margin-top: 10px; font-size: 22px; color: var(--text-primary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

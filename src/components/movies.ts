@@ -115,7 +115,7 @@ export class Movies extends CatalogView<VodCategory, VodItem> {
       <div class="catalog-tile" data-focusable data-key="w:${vod.streamId}"
            data-item-id="${vod.streamId}" data-category-id="${vod.categoryId}"
            data-watchlist-item="${vod.streamId}">
-        <div class="catalog-poster-wrap">${this.posterCell(vod.name, vod.poster)}${
+        <div class="catalog-poster-wrap">${this.posterCell(vod.name, vod.poster, true)}${
           this.itemLockBadge(vod.categoryId, vod.streamId)}</div>
         <div class="catalog-tile-name">${vod.name}</div>
       </div>

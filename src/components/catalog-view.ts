@@ -87,6 +87,9 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
   protected gridCategory: C | null = null;
   protected deepLinkBack: (() => void) | null = null;
   private gridFocusIndex = 0;
+  // The tile whose poster is currently decoded; released when focus moves away,
+  // so at most one full-resolution poster bitmap is held at a time.
+  private lastPosterRoot: HTMLElement | null = null;
   // The browse tile that opened a grid or detail, refocused on Back.
   private readonly gridVirtualizer = new VirtualGrid({
     columnStride: CATALOG_GRID_COLUMN_STRIDE,
@@ -478,6 +481,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     const gridCell = el?.closest<HTMLElement>('[data-grid-index]');
     if (this.mode === 'grid' && gridCell?.dataset.gridIndex !== undefined) {
       this.gridFocusIndex = parseInt(gridCell.dataset.gridIndex, 10);
+      this.activateTilePoster(el!);
       return;
     }
     const categoryCell = el?.closest<HTMLElement>('[data-category-virtual-index]');
@@ -489,6 +493,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     if (id === undefined) return;
     const item = this.findItem(el.dataset.categoryId ?? '', id);
     if (item) this.updateHero(this.itemName(item), this.itemPoster(item));
+    this.activateTilePoster(el);
   }
 
   // scrollIntoView leaves an edge tile flush with the rail's scrollport, which
@@ -523,6 +528,44 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     // that could break out of it (matches renderBrowse's heroBg).
     const bg = poster ? poster.replace(/["'()\\\s]/g, encodeURIComponent) : '';
     hero.style.backgroundImage = bg ? `url('${bg}')` : 'none';
+  }
+
+  // Decode the focused tile's poster and release the previously-focused tile's
+  // poster, so at most one full-resolution poster bitmap lives in memory (plus
+  // the hero backdrop). Setting `img.src = ''` drops the decoded bitmap; merely
+  // hiding the image would keep it resident.
+  private activateTilePoster(el: HTMLElement | null): void {
+    this.deactivateTilePoster(this.lastPosterRoot);
+    this.lastPosterRoot = null;
+    if (!el) return;
+    const box = el.querySelector<HTMLElement>('.catalog-poster-lazy[data-src]');
+    if (!box) return;
+    const img = box.querySelector<HTMLImageElement>('.catalog-poster-img');
+    const letter = box.querySelector<HTMLElement>('.catalog-poster-letter');
+    const src = box.dataset.src;
+    if (!src || !img) return;
+    img.src = src;
+    img.style.display = 'block';
+    if (letter) letter.style.display = 'none';
+    img.onerror = () => {
+      img.style.display = 'none';
+      if (letter) letter.style.display = '';
+    };
+    this.lastPosterRoot = el;
+  }
+
+  private deactivateTilePoster(el: HTMLElement | null): void {
+    if (!el) return;
+    const box = el.querySelector<HTMLElement>('.catalog-poster-lazy[data-src]');
+    if (!box) return;
+    const img = box.querySelector<HTMLImageElement>('.catalog-poster-img');
+    const letter = box.querySelector<HTMLElement>('.catalog-poster-letter');
+    if (img) {
+      img.src = '';
+      img.style.display = 'none';
+      img.onerror = null;
+    }
+    if (letter) letter.style.display = '';
   }
 
   // Concealed titles are dropped at load, so every rail, grid, and hero built
@@ -595,10 +638,21 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     this.renderGrid();
   }
 
-  protected posterCell(name: string, poster: string): Safe {
-    return poster
-      ? html`<img class="catalog-poster" src="${poster}" alt="" loading="lazy" onerror="this.style.display='none'">`
-      : html`<div class="catalog-poster catalog-poster-empty">${name.charAt(0)}</div>`;
+  // Lazy posters render as a placeholder box (no image `src`) and only decode
+  // their poster when the tile receives focus. `loading="lazy"` is ignored on
+  // Chromium 38, so without this every rail poster decodes its full-resolution
+  // image at once and exhausts webOS 3.9's memory budget.
+  protected posterCell(name: string, poster: string, lazy = false): Safe {
+    if (!poster) return html`<div class="catalog-poster catalog-poster-empty">${name.charAt(0)}</div>`;
+    if (lazy) {
+      return html`
+        <div class="catalog-poster catalog-poster-lazy" data-src="${poster}">
+          <div class="catalog-poster-letter">${name.charAt(0)}</div>
+          <img class="catalog-poster-img" alt="">
+        </div>
+      `;
+    }
+    return html`<img class="catalog-poster" src="${poster}" alt="" loading="lazy" onerror="this.style.display='none'">`;
   }
 
   protected itemLockBadge(categoryId: string, id: string): Safe {
@@ -625,7 +679,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     return html`
       <div class="catalog-tile" data-focusable data-key="i:${cat}:${id}"
            data-item-id="${id}" data-category-id="${cat}">
-        <div class="catalog-poster-wrap">${this.posterCell(this.itemName(item), this.itemPoster(item))}${
+        <div class="catalog-poster-wrap">${this.posterCell(this.itemName(item), this.itemPoster(item), true)}${
           this.itemLockBadge(cat, id)}</div>
         <div class="catalog-tile-name">${this.itemName(item)}</div>
       </div>
