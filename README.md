@@ -5,9 +5,9 @@
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
   <p>
   <a href="#supported-webos-versions"><img src="https://img.shields.io/badge/webOS-4%2B-e6007e?logo=webos&logoColor=white" alt="webOS 4+"></a>
-  <a href="https://github.com/lennylxx/webos-iptv-player/releases/latest"><img src="https://img.shields.io/github/v/release/lennylxx/webos-iptv-player" alt="Latest release"></a>
-  <a href="https://github.com/lennylxx/webos-iptv-player/releases"><img src="https://img.shields.io/github/downloads/lennylxx/webos-iptv-player/total" alt="GitHub downloads"></a>
-  <a href="https://lennylxx.github.io/webos-iptv-player/"><img src="https://img.shields.io/badge/Website-222?logo=github" alt="Project website"></a>
+  <a href="https://github.com/thunder2k/webos-iptv-player/releases/latest"><img src="https://img.shields.io/github/v/release/thunder2k/webos-iptv-player" alt="Latest release"></a>
+  <a href="https://github.com/thunder2k/webos-iptv-player/releases"><img src="https://img.shields.io/github/downloads/thunder2k/webos-iptv-player/total" alt="GitHub downloads"></a>
+  <a href="https://thunder2k.github.io/webos-iptv-player/"><img src="https://img.shields.io/badge/Website-222?logo=github" alt="Project website"></a>
   </p>
 </div>
 
@@ -143,13 +143,13 @@ Install the community
 then open **Settings → Add repository** and enter:
 
 ```text
-https://raw.githubusercontent.com/lennylxx/webos-iptv-player/main/homebrew-repository.json
+https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json
 ```
 
 To prefill the repository URL from a computer configured with `ares-cli`, run:
 
 ```bash
-ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/lennylxx/webos-iptv-player/main/homebrew-repository.json"}'
+ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json"}'
 ```
 
 Confirm **Add repository** on the TV. Homebrew Channel can then install the app
@@ -158,7 +158,7 @@ and detect updates from later GitHub releases.
 ### Developer Mode
 
 1. **Download the app.** On your computer, open the
-   [Releases page](https://github.com/lennylxx/webos-iptv-player/releases/latest)
+   [Releases page](https://github.com/thunder2k/webos-iptv-player/releases/latest)
    and download the latest `.ipk` file.
 
 2. **Turn on Developer Mode on the TV.**

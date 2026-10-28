@@ -5,9 +5,9 @@
   <p><a href="README.md">English</a> | 简体中文</p>
   <p>
   <a href="#支持的-webos-版本"><img src="https://img.shields.io/badge/webOS-4%2B-e6007e?logo=webos&logoColor=white" alt="webOS 4+"></a>
-  <a href="https://github.com/lennylxx/webos-iptv-player/releases/latest"><img src="https://img.shields.io/github/v/release/lennylxx/webos-iptv-player" alt="最新版本"></a>
-  <a href="https://github.com/lennylxx/webos-iptv-player/releases"><img src="https://img.shields.io/github/downloads/lennylxx/webos-iptv-player/total" alt="GitHub 下载量"></a>
-  <a href="https://lennylxx.github.io/webos-iptv-player/"><img src="https://img.shields.io/badge/Website-222?logo=github" alt="项目网站"></a>
+  <a href="https://github.com/thunder2k/webos-iptv-player/releases/latest"><img src="https://img.shields.io/github/v/release/thunder2k/webos-iptv-player" alt="最新版本"></a>
+  <a href="https://github.com/thunder2k/webos-iptv-player/releases"><img src="https://img.shields.io/github/downloads/thunder2k/webos-iptv-player/total" alt="GitHub 下载量"></a>
+  <a href="https://thunder2k.github.io/webos-iptv-player/"><img src="https://img.shields.io/badge/Website-222?logo=github" alt="项目网站"></a>
   </p>
 </div>
 
@@ -142,13 +142,13 @@ npm install -g @webos-tools/cli
 然后打开 **Settings → Add repository** 并输入：
 
 ```text
-https://raw.githubusercontent.com/lennylxx/webos-iptv-player/main/homebrew-repository.json
+https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json
 ```
 
 如果电脑已配置 `ares-cli`，可运行以下命令预填仓库地址：
 
 ```bash
-ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/lennylxx/webos-iptv-player/main/homebrew-repository.json"}'
+ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json"}'
 ```
 
 在电视上确认 **Add repository**。添加完成后，即可通过 Homebrew Channel
@@ -157,7 +157,7 @@ ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository
 ### 开发者模式
 
 1. **下载应用安装包。** 在电脑上打开
-   [Releases 页面](https://github.com/lennylxx/webos-iptv-player/releases/latest)，
+   [Releases 页面](https://github.com/thunder2k/webos-iptv-player/releases/latest)，
    下载最新的 `.ipk` 文件。
 
 2. **在电视上开启开发者模式。**

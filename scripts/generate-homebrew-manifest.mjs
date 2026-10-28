@@ -29,8 +29,8 @@ const manifest = {
   type: appInfo.type,
   title: appInfo.title,
   appDescription: appInfo.appDescription,
-  iconUri: 'https://raw.githubusercontent.com/lennylxx/webos-iptv-player/main/assets/icon130.png',
-  sourceUrl: 'https://github.com/lennylxx/webos-iptv-player',
+  iconUri: 'https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/assets/icon130.png',
+  sourceUrl: 'https://github.com/thunder2k/webos-iptv-player',
   rootRequired: false,
   ipkUrl: basename(ipkPath),
   ipkHash: {
