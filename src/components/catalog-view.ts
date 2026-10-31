@@ -496,6 +496,15 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     this.activateTilePoster(el);
   }
 
+  private updateHero(name: string, poster: string): void {
+    const hero = this.layers.browse.querySelector<HTMLElement>('.catalog-hero');
+    if (!hero) return;
+    const title = this.layers.browse.querySelector<HTMLElement>('.catalog-hero-title');
+    if (title) title.textContent = name; // textContent escapes untrusted names
+    const bg = poster ? poster.replace(/["'()\\\s]/g, encodeURIComponent) : '';
+    hero.style.backgroundImage = bg ? `url('${bg}')` : 'none';
+  }
+
   // scrollIntoView leaves an edge tile flush with the rail's scrollport, which
   // clips its focus ring; keep a gutter visible beside it.
   private revealRailGutter(el: HTMLElement): void {
@@ -519,16 +528,6 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     }
   }
 
-  private updateHero(name: string, poster: string): void {
-    const hero = this.layers.browse.querySelector<HTMLElement>('.catalog-hero');
-    if (!hero) return;
-    const title = this.layers.browse.querySelector<HTMLElement>('.catalog-hero-title');
-    if (title) title.textContent = name; // textContent escapes untrusted names
-    // Poster sits inside a CSS url('…') string; percent-encode the characters
-    // that could break out of it (matches renderBrowse's heroBg).
-    const bg = poster ? poster.replace(/["'()\\\s]/g, encodeURIComponent) : '';
-    hero.style.backgroundImage = bg ? `url('${bg}')` : 'none';
-  }
 
   // Decode the focused tile's poster and release the previously-focused tile's
   // poster, so at most one full-resolution poster bitmap lives in memory (plus
@@ -602,7 +601,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     return inCat.find((x) => this.itemId(x) === id) ?? this.fallbackItem(id);
   }
 
-  private async openGrid(categoryId: string): Promise<void> {
+  protected async openGrid(categoryId: string): Promise<void> {
     if (!this.account) return;
     const account = this.account;
     const signal = this.requestSignal;

@@ -161,6 +161,32 @@ describe('Series browse + grid', () => {
     expect(handlers.onBack).not.toHaveBeenCalled();
   });
 
+  it('opens a category grid on category tile click (no nav/hover needed)', async () => {
+    const cats = Array.from({ length: 7 }, (_, i) => ({ id: String(i + 1), name: `Cat ${i + 1}` }));
+    const { view, handlers } = await openWith(cats, [series('s1', 'Series One')]);
+    catalogMock.loadSeries.mockResolvedValue([series('s2', 'Series Two', '7')]);
+    const cat = container.querySelector<HTMLElement>('.catalog-cat[data-category-id="7"]')!;
+    expect(cat).not.toBeNull();
+    cat.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector('.catalog-grid')).not.toBeNull();
+    expect(container.querySelector('.catalog-tile[data-item-id="s2"]')).not.toBeNull();
+    expect(handlers.onBack).not.toHaveBeenCalled();
+  });
+
+  it('opens a category grid on see-all tile click (no nav/hover needed)', async () => {
+    const items = Array.from({ length: 21 }, (_, i) => series(`s${String(i)}`, `Series ${String(i)}`));
+    const { view, handlers } = await openWith([{ id: '1', name: 'Cat A' }], items);
+    const seeAll = container.querySelector<HTMLElement>('.catalog-see-all[data-category-id="1"]')!;
+    expect(seeAll).not.toBeNull();
+    seeAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    catalogMock.loadSeries.mockResolvedValue(items);
+    await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector('.catalog-grid')).not.toBeNull();
+    expect(container.querySelector('.catalog-grid-title')?.textContent).toBe('Cat A');
+    expect(handlers.onBack).not.toHaveBeenCalled();
+  });
+
   it('opens a series detail on select and backs out to browse', async () => {
     catalogMock.loadSeriesInfo.mockResolvedValue({ seasons: [], episodesBySeason: {} });
     const { view, handlers } = await openWith();

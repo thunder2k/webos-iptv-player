@@ -192,6 +192,28 @@ describe('Movies browse + grid', () => {
     expect(handlers.onBack).not.toHaveBeenCalled();
   });
 
+  it('opens a category grid on category tile click (no nav/hover needed)', async () => {
+    const cats = Array.from({ length: 7 }, (_, i) => ({ id: String(i + 1), name: `Cat ${i + 1}` }));
+    const { view, handlers } = await openWith(cats, [vod('10', 'Movie One')]);
+    catalogMock.loadVodStreams.mockResolvedValue([vod('20', 'Movie Two', '7')]);
+    const cat = container.querySelector<HTMLElement>('.catalog-cat[data-category-id="7"]')!;
+    expect(cat).not.toBeNull();
+    cat.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector('.catalog-grid')).not.toBeNull();
+    expect(container.querySelector('.catalog-tile[data-item-id="20"]')).not.toBeNull();
+    expect(handlers.onBack).not.toHaveBeenCalled();
+  });
+
+  it('opens a category grid on see-all tile click (no nav/hover needed)', async () => {
+    const view = await eightFullCategories();
+    const seeAll = container.querySelector<HTMLElement>('.catalog-see-all[data-category-id="2"]')!;
+    seeAll.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector('.catalog-grid-title')?.textContent).toBe('Cat 2');
+    expect(container.querySelector<HTMLElement>('.catalog-grid-track')?.style.height).not.toBeNull();
+  });
+
   it('keeps browse resident under a grid and returns to the same tile', async () => {
     const cats = Array.from({ length: 7 }, (_, i) => ({ id: String(i + 1), name: `Cat ${i + 1}` }));
     const { view } = await openWith(cats, [vod('10', 'Movie One')]);

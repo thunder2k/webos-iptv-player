@@ -10,6 +10,7 @@ import {
 import { createLogger } from '../utils/logger';
 import { createGroupNameMatcher, type XtreamGroupNameFilter } from '../utils/xtream-category-filter';
 import { runAppWorkerTask } from '../workers/app-worker-client';
+import { fetchViaLuna } from '../utils/luna-fetch';
 import type {
   M3UWorkerChunk,
   M3UWorkerRequest,
@@ -215,7 +216,42 @@ export async function fetchAndParseM3UInWorker(
   let transport: M3UWorkerResponse['metrics']['transport'] = 'stream';
   let stage = 'fetch';
   try {
-    const response = await fetch(request.url, { signal: controller.signal });
+    let response: Response;
+    try {
+      response = await fetch(request.url, { signal: controller.signal });
+    } catch {
+      // Direct fetch failed (e.g., CORS from file:// origin in a Web Worker).
+      // Fall back to the bundled service's Luna HTTP client, which proxies
+      // server-side via Node.js and avoids browser CORS/worker restrictions.
+      try {
+        const lunaResponse = await fetchViaLuna(request.url, request.timeout);
+        if (!lunaResponse.ok) throw new Error(`HTTP ${lunaResponse.status}: ${lunaResponse.statusText}`);
+        const bytes = new TextEncoder().encode(await lunaResponse.text());
+        inputBytes = bytes.length;
+        chunks = bytes.length ? 1 : 0;
+        emitM3UProgress();
+        stage = 'decode_parse';
+        const lunaData = parseM3UBytes(bytes, request.url, options);
+        emitM3UProgress(true);
+        transport = 'text';
+        const channelsKept = lunaData.channels.length + emittedChannels;
+        return {
+          data: lunaData,
+          metrics: {
+            transport,
+            filter: liveFilters.mode,
+            inputBytes,
+            chunks,
+            channelsKept,
+            channelsDropped: liveFilters.getDroppedCount(),
+            elapsedMs: Date.now() - started,
+          },
+        };
+      } catch {
+        // Luna fallback also failed — re-throw the original fetch error.
+        throw new Error('Failed to fetch');
+      }
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     stage = 'read';
     reader = typeof response.body?.getReader === 'function'

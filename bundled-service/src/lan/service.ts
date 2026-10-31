@@ -7,6 +7,7 @@
  */
 
 import * as http from 'http';
+import * as nodeUrl from 'url';
 import { SetupActionStore } from '../setup/actions';
 import { SetupStateStore } from '../setup/state';
 import { startServer, type ServiceChangeEvent } from './server';
@@ -28,6 +29,8 @@ type LunaMsg = {
   // cleanup. (msg.cancel() exists too but is a *server-side* trigger taking
   // no arguments, not a callback-registering API.)
   on?: (event: 'cancel', listener: () => void) => void;
+  // Parameters passed in the Luna request body (JSON), e.g. { url: "..." }.
+  payload?: { url?: string };
 };
 
 // Non-webOS fallback (e.g. local testing): start the HTTP server directly with
@@ -170,5 +173,66 @@ export function registerLanService(service: LunaService, dataDir: string): void 
       }
     }
     msg.respond({ subscribed: !!msg.isSubscription });
+  });
+
+  // fetch_url — server-side HTTP GET used by the app's fetchViaLuna fallback
+  // when fetch() is unavailable (e.g. in Web Workers on webOS 3.9). The app
+  // calls luna://<serviceId>/fetch_url with { url } and expects { ok, status,
+  // statusText, body } in response.
+  service.register('fetch_url', (msg) => {
+    const url = msg.payload && msg.payload.url;
+    if (typeof url !== 'string' || url.length === 0) {
+      msg.respond({ ok: false, status: 400, statusText: 'Bad Request', body: null, error: 'Missing url parameter' });
+      return;
+    }
+
+    let parsed: { protocol: string | null; hostname: string | null; port: string | null; path: string | null };
+    try {
+      parsed = nodeUrl.parse(url);
+    } catch {
+      msg.respond({ ok: false, status: 400, statusText: 'Bad Request', body: null, error: 'Invalid URL' });
+      return;
+    }
+
+    const isHttps = parsed.protocol === 'https:';
+    const client = isHttps ? require('https') : require('http');
+    const options = {
+      host: parsed.hostname,
+      port: parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80),
+      path: parsed.path || '/',
+      method: 'GET',
+    };
+
+    let settled = false;
+    const req = client.request(options, (res: http.IncomingMessage) => {
+      if (settled) return;
+      settled = true;
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => { body += chunk; });
+      res.on('end', () => {
+        msg.respond({
+          ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
+          status: res.statusCode ?? 0,
+          statusText: res.statusMessage ?? '',
+          body: body,
+        });
+      });
+    });
+
+    req.on('error', (e: Error) => {
+      if (settled) return;
+      settled = true;
+      msg.respond({ ok: false, status: 0, statusText: '', body: null, error: e.message || String(e) });
+    });
+
+    req.setTimeout(60000, () => {
+      if (settled) return;
+      settled = true;
+      req.abort();
+      msg.respond({ ok: false, status: 0, statusText: '', body: null, error: 'Request timed out' });
+    });
+
+    req.end();
   });
 }

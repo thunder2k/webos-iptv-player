@@ -206,6 +206,13 @@ function installAbortController(): void {
   };
 }
 
+// Install the XHR-based fetch polyfill BEFORE the abort controller wraps
+// scope.fetch. On webOS 3.9 (Chromium 38) neither fetch nor AbortController
+// exist natively: installAbortController wraps scope.fetch, so if fetch isn't
+// polyfilled yet the wrapper calls an undefined nativeFetch and every fetch
+// (including M3U playlist loading) throws. Fetch must exist first so the
+// abort controller can wrap the working XHR-based implementation.
+if (typeof self !== 'undefined') installFetchPolyfill();
 installAbortController();
 
 function pluralLanguage(locale?: string | string[]): string {
@@ -550,8 +557,6 @@ function installFetchPolyfill(): void {
     });
   } as any;
 }
-
-if (typeof self !== 'undefined') installFetchPolyfill();
 
 // Map polyfill (Chrome 38 lacks Map - Chrome 43+)
 if (typeof Map === 'undefined') {

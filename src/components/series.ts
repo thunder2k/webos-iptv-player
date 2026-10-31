@@ -76,16 +76,29 @@ export class Series extends CatalogView<SeriesCategory, SeriesItem> {
     // this.nav.focused to the clicked tile, so onSelect() never opens the
     // detail. Handle the click here instead, bypassing the nav.focused chain.
     this.container.addEventListener('click', (e: MouseEvent) => {
-      const tile = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id], [data-resume-episode]');
-      if (!tile || this.mode === 'detail') return;
-      e.stopPropagation();
-      const resumeEpisode = tile.dataset.resumeEpisode;
-      if (resumeEpisode !== undefined) {
-        this.playResume(resumeEpisode);
+      const target = e.target as HTMLElement;
+      const tile = target.closest<HTMLElement>('[data-item-id], [data-resume-episode]');
+      if (tile) {
+        if (this.mode === 'detail') return;
+        e.stopPropagation();
+        const resumeEpisode = tile.dataset.resumeEpisode;
+        if (resumeEpisode !== undefined) {
+          this.playResume(resumeEpisode);
+          return;
+        }
+        const item = this.findItem(tile.dataset.categoryId ?? '', tile.dataset.itemId ?? '');
+        if (item) void this.openDetail(item);
         return;
       }
-      const item = this.findItem(tile.dataset.categoryId ?? '', tile.dataset.itemId ?? '');
-      if (item) void this.openDetail(item);
+      // Category and see-all tiles carry data-category-id but no data-item-id,
+      // so they fall through to the global click handler, which relies on
+      // this.nav.focused. On Chromium 38 a real click doesn't set this.nav.focused,
+      // so onSelect() can't find them via the nav chain — handle them directly.
+      const cat = target.closest<HTMLElement>('.catalog-cat, .catalog-see-all');
+      if (cat && cat.dataset.categoryId !== undefined && this.mode === 'browse') {
+        e.stopPropagation();
+        void this.openGrid(cat.dataset.categoryId);
+      }
     });
   }
 

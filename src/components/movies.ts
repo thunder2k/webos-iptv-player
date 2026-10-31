@@ -31,12 +31,25 @@ export class Movies extends CatalogView<VodCategory, VodItem> {
     // real click does not set this.nav.focused, so onSelect() never opens the
     // detail. Handle the click here instead, bypassing the nav.focused chain.
     this.container.addEventListener('click', (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-item-id]');
-      if (!target || this.mode === 'detail') return;
-      e.stopPropagation();
-      const fromWatchlist = target.dataset.watchlistItem !== undefined;
-      const item = this.findItem(target.dataset.categoryId ?? '', target.dataset.itemId ?? '');
-      if (item) void this.openDetail(item, fromWatchlist);
+      const target = e.target as HTMLElement;
+      const tile = target.closest<HTMLElement>('[data-item-id]');
+      if (tile) {
+        if (this.mode === 'detail') return;
+        e.stopPropagation();
+        const fromWatchlist = tile.dataset.watchlistItem !== undefined;
+        const item = this.findItem(tile.dataset.categoryId ?? '', tile.dataset.itemId ?? '');
+        if (item) void this.openDetail(item, fromWatchlist);
+        return;
+      }
+      // Category and see-all tiles carry data-category-id but no data-item-id,
+      // so they fall through to the global click handler, which relies on
+      // this.nav.focused. On Chromium 38 a real click doesn't set this.nav.focused,
+      // so onSelect() can't find them via the nav chain — handle them directly.
+      const cat = target.closest<HTMLElement>('.catalog-cat, .catalog-see-all');
+      if (cat && cat.dataset.categoryId !== undefined && this.mode === 'browse') {
+        e.stopPropagation();
+        void this.openGrid(cat.dataset.categoryId);
+      }
     });
     // Direct click handling for Play / Resume / Watchlist buttons on the detail
     // layer. Same rationale: a click may not set this.nav.focused, so

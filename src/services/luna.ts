@@ -28,8 +28,17 @@ type PalmServiceBridgeConstructor = new () => PalmServiceBridgeInstance;
 const activeRequests: LunaRequestHandle[] = [];
 
 function bridgeConstructor(): PalmServiceBridgeConstructor | null {
-  if (typeof window === 'undefined') return null;
-  const candidate = (window as unknown as {
+  // PalmServiceBridge lives on `window` in the main document context and on
+  // `self` in Web Worker contexts. Check both so Luna requests work from
+  // either (e.g. M3U/XMLTV loading runs in a worker on webOS 3.9).
+  const globalScope =
+    typeof window !== 'undefined'
+      ? window
+      : typeof self !== 'undefined'
+        ? self
+        : null;
+  if (!globalScope) return null;
+  const candidate = (globalScope as unknown as {
     PalmServiceBridge?: PalmServiceBridgeConstructor;
   }).PalmServiceBridge;
   return typeof candidate === 'function' ? candidate : null;
