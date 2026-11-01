@@ -101,4 +101,24 @@ describe('CatalogView lazy posters', () => {
     expect(img.style.display).toBe('none');
     expect(letter.style.display).not.toBe('none');
   });
+
+  it('loads only the focused tile poster, not the full-screen hero backdrop', () => {
+    (view as any).itemsByCategory = { c1: [item] };
+
+    const tile = tileOf(item);
+
+    const hero = document.createElement('div');
+    hero.className = 'catalog-hero';
+    hero.style.backgroundImage = "url('http://host/other.jpg')";
+    (view as any).layers.browse.appendChild(hero);
+
+    const before = hero.style.backgroundImage;
+
+    (view as any).onFocusChanged(tile);
+
+    const box = tile.querySelector('.catalog-poster-lazy[data-src]')!;
+    const img = box.querySelector('img.catalog-poster-img')!;
+    expect(img.getAttribute('src')).toBe(poster); // tile image decoded
+    expect(hero.style.backgroundImage).toBe(before); // full-screen backdrop untouched
+  });
 });

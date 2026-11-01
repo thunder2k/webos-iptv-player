@@ -491,18 +491,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     if (document.documentElement.classList.contains('keyboard-nav')) this.revealRailGutter(el);
     const id = el.dataset.itemId;
     if (id === undefined) return;
-    const item = this.findItem(el.dataset.categoryId ?? '', id);
-    if (item) this.updateHero(this.itemName(item), this.itemPoster(item));
     this.activateTilePoster(el);
-  }
-
-  private updateHero(name: string, poster: string): void {
-    const hero = this.layers.browse.querySelector<HTMLElement>('.catalog-hero');
-    if (!hero) return;
-    const title = this.layers.browse.querySelector<HTMLElement>('.catalog-hero-title');
-    if (title) title.textContent = name; // textContent escapes untrusted names
-    const bg = poster ? poster.replace(/["'()\\\s]/g, encodeURIComponent) : '';
-    hero.style.backgroundImage = bg ? `url('${bg}')` : 'none';
   }
 
   // scrollIntoView leaves an edge tile flush with the rail's scrollport, which
