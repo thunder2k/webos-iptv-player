@@ -161,7 +161,7 @@ test('adds and removes Movies and Series through their detail screens', async ({
   await expect.poll(() => storedWatchlist(page)).toEqual([]);
 });
 
-test('shows Resume on return and keeps three movie actions at a stable height', async ({ page }) => {
+test('shows Resume on return, keeps playback actions aligned, and offers progress removal', async ({ page }) => {
   await seedWatchlistCatalog(page, [movieEntry('10', 'Movie One', 1000)]);
   await routeLiveManifest(page);
   await neuterVideo(page);
@@ -180,8 +180,9 @@ test('shows Resume on return and keeps three movie actions at a stable height', 
 
   await expect(page.locator('#view-movies')).toBeVisible();
   await expect(page.locator('#view-movies [data-action="resume"]')).toBeVisible();
-  const actions = page.locator('#view-movies .detail-btn');
+  const actions = page.locator('#view-movies .detail-btn:not([data-action="remove-resume"])');
   await expect(actions).toHaveCount(3);
+  await expect(page.locator('#view-movies [data-action="remove-resume"]')).toContainText('Remove from Continue Watching');
   const layout = await actions.evaluateAll((buttons) => buttons.map((button) => ({
     height: (button as HTMLElement).offsetHeight,
     top: (button as HTMLElement).offsetTop,
@@ -192,7 +193,7 @@ test('shows Resume on return and keeps three movie actions at a stable height', 
   expect(layout.every((item) => item.whiteSpace === 'nowrap')).toBe(true);
 });
 
-test('keeps three pseudo-localized movie actions on one row without clipping', async ({ page }) => {
+test('keeps pseudo-localized playback actions aligned and wraps progress removal without clipping', async ({ page }) => {
   await seedWatchlistCatalog(page, [movieEntry('10', 'Movie One', 1000)]);
   await page.addInitScript(() => {
     localStorage.setItem('iptv_resume', JSON.stringify({
@@ -215,7 +216,7 @@ test('keeps three pseudo-localized movie actions on one row without clipping', a
   await enterTab(page, 'movies');
   await focusAndSelect(page, '#view-movies [data-watchlist-item="10"]');
 
-  const actions = page.locator('#view-movies .detail-btn');
+  const actions = page.locator('#view-movies .detail-btn:not([data-action="remove-resume"])');
   await expect(actions).toHaveCount(3);
   await expect(actions.first()).toContainText('[!!');
   const layout = await page.locator('#view-movies .detail-actions').evaluate((row) => ({
@@ -229,7 +230,10 @@ test('keeps three pseudo-localized movie actions on one row without clipping', a
   }));
   expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
   expect(layout.buttons.every(button => button.scrollWidth <= button.clientWidth + 1)).toBe(true);
-  expect(new Set(layout.buttons.map(button => button.top)).size).toBe(1);
+  expect(new Set(layout.buttons.slice(0, 3).map(button => button.top)).size).toBe(1);
+  expect(layout.buttons).toHaveLength(4);
+  expect(layout.buttons[3].top).toBeGreaterThanOrEqual(layout.buttons[0].top);
+  await expect(page.locator('#view-movies [data-action="remove-resume"]')).toBeVisible();
 });
 
 test('auto-plays the next Watchlist movie and removes each completed movie', async ({ page }) => {

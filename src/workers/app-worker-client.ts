@@ -127,8 +127,10 @@ export function retainAppWorker(): () => void {
   };
 }
 
-export function isAppWorkerRunning(): boolean {
-  return client !== null;
+// Each new worker after a termination or crash gets a new generation, so
+// state held in a worker can be told apart from its empty successor.
+export function appWorkerGeneration(): number | null {
+  return currentGeneration;
 }
 
 export function terminateAppWorker(reason = 'manual'): void {

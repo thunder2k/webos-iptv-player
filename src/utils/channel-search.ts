@@ -128,11 +128,18 @@ interface ScoredNameItem<T> {
   idx: number;
 }
 
+export { fold as foldSearchText };
+
 export function prepareSearchItem<T>(
   item: T,
   fields: (item: T) => string[],
 ): PreparedSearchItem<T> {
-  const values = fields(item).map(fold).filter(Boolean);
+  return prepareFoldedSearchItem(item, fields(item).map(fold));
+}
+
+/** Like `prepareSearchItem`, for field values already passed through `foldSearchText`. */
+export function prepareFoldedSearchItem<T>(item: T, folded: string[]): PreparedSearchItem<T> {
+  const values = folded.filter(Boolean);
   const fieldTokens: string[] = [];
   const fieldTokenOffsets = [0];
   for (const value of values) {

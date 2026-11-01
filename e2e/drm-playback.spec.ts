@@ -2,7 +2,7 @@ import { test, expect, routePlaylist, seedPlaylist, type Page } from './helpers'
 import { DASH_URL, DASH_M3U, DASH_MPD, installShakaStub, startDash, expectDrmPills } from './shaka-fixture';
 
 async function captureDiagnostics(page: Page) {
-  const { assembleDiagnosticReport, formatDiagnosticSummary } = await import('../scripts/tv-diag.mjs');
+  const { assembleDiagnosticReport, formatDiagnosticSummary, eventField } = await import('../scripts/tv-diag.mjs');
   const { normalizeCdpLogEvent } = await import('../scripts/cdp-logs.mjs');
   const logs: ReturnType<typeof normalizeCdpLogEvent>[] = [];
   const client = await page.context().newCDPSession(page);
@@ -22,6 +22,7 @@ async function captureDiagnostics(page: Page) {
       networkEvents: [],
     }),
     summary: formatDiagnosticSummary,
+    field: (event: { text: string }, key: string) => eventField(event.text, key),
     close: () => client.detach(),
   };
 }
@@ -238,12 +239,17 @@ for (const drm of [
     const completed = timeline.find(event => event.code === 'playback.mse.destroy.completed')!;
     const waiting = timeline.find(event => event.code === 'playback.mse.teardown.wait')!;
     const resumed = timeline.find(event => event.code === 'playback.mse.teardown.resumed')!;
-    expect(started.session).not.toBeNull();
-    expect(completed).toMatchObject({ session: started.session, load: started.load, source: 'shaka' });
+    const { field } = diagnostics;
+    expect(field(started, 'session')).not.toBeNull();
+    expect(field(completed, 'session')).toBe(field(started, 'session'));
+    expect(field(completed, 'load')).toBe(field(started, 'load'));
+    expect(field(completed, 'source')).toBe('shaka');
     expect(completed.text).toMatch(/\belapsedMs=\d+/);
-    expect(waiting.text).toContain(`owner=(session=${started.session} load=${started.load})`);
-    expect(resumed).toMatchObject({ session: waiting.session, load: waiting.load });
-    expect(waiting.load).toBeGreaterThan(started.load!);
+    expect(waiting.text).toContain(
+      `owner=(session=${field(started, 'session')} load=${field(started, 'load')})`);
+    expect(field(resumed, 'session')).toBe(field(waiting, 'session'));
+    expect(field(resumed, 'load')).toBe(field(waiting, 'load'));
+    expect(Number(field(waiting, 'load'))).toBeGreaterThan(Number(field(started, 'load')));
     expect(timeline.indexOf(completed)).toBeLessThan(timeline.indexOf(resumed));
     expect(diagnostics.summary(report)).toContain('playback.mse.teardown.resumed');
     await diagnostics.close();
@@ -316,7 +322,8 @@ for (const drm of [
       event.code === 'playback.dash.variant.changed').length).toBe(2);
     const report = diagnostics.report();
     const adaptations = report.diagnostics.filter(event => event.code === 'playback.dash.variant.changed');
-    expect(adaptations.every(event => event.reason === 'adaptation' && event.load !== null)).toBe(true);
+    expect(adaptations.every(event => diagnostics.field(event, 'reason') === 'adaptation'
+      && diagnostics.field(event, 'load') !== null)).toBe(true);
     expect(adaptations[0].text).toContain('width=1280 height=720');
     expect(adaptations[0].text).toContain('frameRate=59.94');
     expect(adaptations[0].text).toContain('audioAtmos=true');

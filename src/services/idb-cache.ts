@@ -1,6 +1,7 @@
 import { CONFIG } from '../config';
 import type { Channel, EpgSource, ParsedEpg } from '../types';
 import { createLogger } from '../utils/logger';
+import type { SearchIndexCandidate } from '../workers/tasks';
 import {
   CACHE_META_STORE as META_STORE,
   CACHE_STORES,
@@ -11,20 +12,21 @@ import {
   openPersistenceDb,
   PLAYLIST_STORE,
   requestResult,
+  SEARCH_INDEX_STORE,
   STREAM_MIME_STORE,
   SUBTITLE_STORE,
   transactionDone,
   type CacheStore,
 } from './idb-database';
+import { cacheEntryMetaId, cacheRecordTimestamp, PLAYLIST_CACHE_KEY } from './idb-schema';
 
 const log = createLogger('CacheStorage');
-const CACHE_CATEGORIES = ['playlist', 'epg', 'catalog', 'subtitle', 'health'] as const;
+const CACHE_CATEGORIES = ['playlist', 'epg', 'catalog', 'subtitle', 'health', 'search'] as const;
 const FALLBACK_BUDGET_BYTES = 384 * 1024 * 1024;
 const MAX_BUDGET_BYTES = 1024 * 1024 * 1024;
 const SUBTITLE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SEARCH_INDEX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLEANUP_MARGIN_BYTES = 4 * 1024 * 1024;
-// Avoid deserializing pre-cross-check caches that may contain Xtream VOD rows.
-const PLAYLIST_CACHE_KEY = 'combined-v3';
 const ENTRY_META_PREFIX = 'entry:';
 const ENTRY_META_INDEX_KEY = 'entry-index';
 const ENTRY_META_VERSION = 1;
@@ -58,6 +60,9 @@ interface CacheEntryMeta {
   byteSize: number;
   expiresAt: number | null;
   lastAccessedAt: number;
+  /** The record's own timestamp, so the app worker can tell its version cheaply. */
+  timestamp?: number;
+  state?: CatalogListState;
 }
 
 interface CacheCandidate {
@@ -95,10 +100,20 @@ export interface CachedEpgEntry {
   filter?: CachedEpgFilter | null;
 }
 
-export interface CachedCatalogEntry<T = unknown> {
-  key: string;
+export interface CachedCatalogMetadata {
   timestamp: number;
+  state?: CatalogListState;
+}
+
+export interface CachedCatalogEntry<T = unknown> extends CachedCatalogMetadata {
+  key: string;
   data: T;
+}
+
+export interface CatalogListState {
+  complete: boolean;
+  refreshAfter: number;
+  freshSince?: number;
 }
 
 interface StreamMimeEntry {
@@ -133,6 +148,7 @@ let scheduledPlaylist: {
 let playlistFrame: number | null = null;
 let playlistGeneration = 0;
 let playlistTimer: ReturnType<typeof setTimeout> | null = null;
+let clearGeneration = 0;
 
 function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
   const result = mutationChain.then(operation, operation);
@@ -184,6 +200,7 @@ function persistScheduledPlaylist(): void {
     pending.refreshIntervalMs,
   ).then((stored) => {
     if (stored) {
+      for (const listener of playlistWriteListeners) listener();
       log.info(
         'Playlist cache write completed',
         'event=playlist.cache.write.completed',
@@ -208,6 +225,35 @@ function persistScheduledPlaylist(): void {
     `elapsedMs=${String(Date.now() - started)}`,
     err,
   ));
+}
+
+const playlistWriteListeners: Array<() => void> = [];
+
+/** Called after a scheduled playlist write lands in IndexedDB. */
+export function onPlaylistCacheWritten(listener: () => void): () => void {
+  playlistWriteListeners.push(listener);
+  return () => {
+    const index = playlistWriteListeners.indexOf(listener);
+    if (index >= 0) playlistWriteListeners.splice(index, 1);
+  };
+}
+
+export interface CacheRecordRef {
+  store: typeof PLAYLIST_STORE | typeof CATALOG_STORE;
+  key: string;
+  timestamp: number;
+}
+
+// The stored record an in-memory array was read from or written to, so the
+// app worker can read the same strings from IndexedDB instead of a postMessage.
+const recordRefs = new WeakMap<object, CacheRecordRef>();
+
+export function cacheRecordRef(value: object): CacheRecordRef | null {
+  return recordRefs.get(value) ?? null;
+}
+
+function rememberRecord(value: unknown, ref: CacheRecordRef): void {
+  if (value && typeof value === 'object') recordRefs.set(value, ref);
 }
 
 export interface PlaylistCacheToken {
@@ -291,6 +337,7 @@ function categoryForStore(store: CacheStore): CacheCategory {
     case STREAM_MIME_STORE: return 'catalog';
     case SUBTITLE_STORE: return 'subtitle';
     case CHANNEL_HEALTH_STORE: return 'health';
+    case SEARCH_INDEX_STORE: return 'search';
   }
 }
 
@@ -301,6 +348,7 @@ function ttlFor(category: CacheCategory): number {
     case 'catalog': return CONFIG.XTREAM.DEFAULT_CATALOG_REFRESH_INTERVAL_MS;
     case 'subtitle': return SUBTITLE_TTL_MS;
     case 'health': return 30 * 24 * 60 * 60 * 1000;
+    case 'search': return SEARCH_INDEX_TTL_MS;
   }
 }
 
@@ -390,7 +438,7 @@ function finiteNumber(value: unknown, fallback: number): number {
 }
 
 function entryMetaId(store: CacheStore, key: IDBValidKey): string {
-  return `${ENTRY_META_PREFIX}${store}:${String(key)}`;
+  return cacheEntryMetaId(store, key);
 }
 
 function entryMeta(
@@ -399,6 +447,7 @@ function entryMeta(
   record: StoredRecord,
   lastAccessedAt = record.lastAccessedAt,
 ): CacheEntryMeta {
+  const state = store === CATALOG_STORE ? catalogListState(record.state) : undefined;
   return {
     category: entryMetaId(store, key),
     cacheCategory: categoryForStore(store),
@@ -407,6 +456,8 @@ function entryMeta(
     byteSize: record.byteSize,
     expiresAt: record.expiresAt,
     lastAccessedAt,
+    timestamp: cacheRecordTimestamp(record),
+    ...(state ? { state } : {}),
   };
 }
 
@@ -519,7 +570,18 @@ async function touchRecord(store: CacheStore, record: StoredRecord): Promise<voi
   if (!db) return;
   try {
     const tx = db.transaction(META_STORE, 'readwrite');
-    tx.objectStore(META_STORE).put(entryMeta(store, key, record, now));
+    const metadata = tx.objectStore(META_STORE);
+    const request = metadata.get(id);
+    request.onsuccess = () => {
+      const current: unknown = request.result;
+      if (isCacheEntryMeta(current) && current.timestamp !== undefined) {
+        if (current.timestamp === cacheRecordTimestamp(record)) {
+          metadata.put({ ...current, lastAccessedAt: now });
+        }
+      } else {
+        metadata.put(entryMeta(store, key, record, now));
+      }
+    };
     await transactionDone(tx);
   } catch {
     // Access-time bookkeeping must not turn a valid cache hit into a miss.
@@ -541,6 +603,7 @@ function emptyUsage(): Record<CacheCategory, CacheUsageEntry> {
     catalog: { bytes: 0, entries: 0 },
     subtitle: { bytes: 0, entries: 0 },
     health: { bytes: 0, entries: 0 },
+    search: { bytes: 0, entries: 0 },
   };
 }
 
@@ -549,10 +612,13 @@ async function rebuildMetadata(): Promise<void> {
   if (!db) return;
   const categories = emptyUsage();
   const entries: CacheEntryMeta[] = [];
+  // Search indexes are disposable and too large to re-measure here, so a
+  // rebuild drops them instead.
+  const scanned = CACHE_STORES.filter(store => store !== SEARCH_INDEX_STORE);
   try {
-    const tx = db.transaction(CACHE_STORES, 'readonly');
+    const tx = db.transaction(scanned, 'readonly');
     const done = transactionDone(tx);
-    await Promise.all(CACHE_STORES.map((storeName) => new Promise<void>((resolve, reject) => {
+    await Promise.all(scanned.map((storeName) => new Promise<void>((resolve, reject) => {
       const category = categoryForStore(storeName);
       const req = tx.objectStore(storeName).openCursor();
       req.onsuccess = () => {
@@ -578,7 +644,8 @@ async function rebuildMetadata(): Promise<void> {
     }), { bytes: 0, entries: 0 });
     const keysTx = db.transaction(META_STORE, 'readonly');
     const existingKeys = await requestResult(keysTx.objectStore(META_STORE).getAllKeys());
-    const metaTx = db.transaction(META_STORE, 'readwrite');
+    const metaTx = db.transaction([META_STORE, SEARCH_INDEX_STORE], 'readwrite');
+    metaTx.objectStore(SEARCH_INDEX_STORE).clear();
     const metaStore = metaTx.objectStore(META_STORE);
     for (const key of existingKeys) {
       if (typeof key === 'string' && key.indexOf(ENTRY_META_PREFIX) === 0) {
@@ -829,7 +896,7 @@ async function pruneBytes(targetBytes: number): Promise<number> {
   addUntilTarget(candidates
     .filter((item) => item.expiresAt !== null && item.expiresAt <= now)
     .sort((a, b) => (a.expiresAt ?? 0) - (b.expiresAt ?? 0)));
-  for (const category of ['subtitle', 'catalog', 'epg', 'playlist'] as const) {
+  for (const category of ['search', 'subtitle', 'catalog', 'epg', 'playlist'] as const) {
     addUntilTarget(candidates
       .filter((item) => item.category === category)
       .sort((a, b) => a.lastAccessedAt - b.lastAccessedAt));
@@ -1023,6 +1090,22 @@ async function readStoreEntries(store: CacheStore): Promise<CacheEntryMeta[]> {
     isCacheEntryMeta(record) && record.store === store);
 }
 
+function usageOf(entries: CacheEntryMeta[]): { bytes: number; entries: number } {
+  return entries.reduce((usage, entry) => ({
+    bytes: usage.bytes + entry.byteSize,
+    entries: usage.entries + 1,
+  }), { bytes: 0, entries: 0 });
+}
+
+const SEARCH_SOURCE_STORES: readonly CacheStore[] = [PLAYLIST_STORE, EPG_STORE, CATALOG_STORE];
+// Bumped when a source store is cleared, so an index write that was reserved
+// before the clear but lands after it is removed on settle.
+const sourceClearGenerations: Record<string, number> = {};
+
+function indexSourceStore(key: string): string {
+  return key.slice(0, Math.max(0, key.indexOf('|')));
+}
+
 async function clearStoreNow(store: CacheStore): Promise<void> {
   const db = await openDb();
   if (!db) throw new Error('IndexedDB unavailable');
@@ -1030,28 +1113,49 @@ async function clearStoreNow(store: CacheStore): Promise<void> {
   const metadata = await readMetadata();
   const category = categoryForStore(store);
   const storeEntries = await readStoreEntries(store);
-  const storeUsage = storeEntries.reduce((usage, entry) => ({
-    bytes: usage.bytes + entry.byteSize,
-    entries: usage.entries + 1,
-  }), { bytes: 0, entries: 0 });
+  const indexed = SEARCH_SOURCE_STORES.indexOf(store) >= 0;
+  // A source's search indexes are keyed to its records, so they go with it.
+  const indexEntries = indexed
+    ? (await readStoreEntries(SEARCH_INDEX_STORE)).filter(entry =>
+      typeof entry.key === 'string' && indexSourceStore(entry.key) === store)
+    : [];
+  const storeUsage = usageOf(storeEntries);
+  const indexUsage = usageOf(indexEntries);
   const categoryUsage = metadata.categories[category];
-  const tx = db.transaction([store, META_STORE], 'readwrite');
+  const searchUsage = metadata.categories.search;
+  if (indexed) sourceClearGenerations[store] = (sourceClearGenerations[store] ?? 0) + 1;
+  const tx = db.transaction(
+    indexed ? [store, SEARCH_INDEX_STORE, META_STORE] : [store, META_STORE],
+    'readwrite',
+  );
   tx.objectStore(store).clear();
-  for (const entry of storeEntries) {
+  if (indexed) {
+    tx.objectStore(SEARCH_INDEX_STORE).delete(IDBKeyRange.bound(`${store}|`, `${store}|\uffff`));
+  }
+  for (const entry of [...storeEntries, ...indexEntries]) {
     tx.objectStore(META_STORE).delete(entry.category);
     accessTouches.delete(entry.category);
   }
+  const now = Date.now();
   tx.objectStore(META_STORE).put({
     category,
     bytes: Math.max(0, categoryUsage.bytes - storeUsage.bytes),
     entries: Math.max(0, categoryUsage.entries - storeUsage.entries),
-    updatedAt: Date.now(),
+    updatedAt: now,
   } satisfies CacheMeta);
+  if (indexEntries.length) {
+    tx.objectStore(META_STORE).put({
+      category: 'search',
+      bytes: Math.max(0, searchUsage.bytes - indexUsage.bytes),
+      entries: Math.max(0, searchUsage.entries - indexUsage.entries),
+      updatedAt: now,
+    } satisfies CacheMeta);
+  }
   tx.objectStore(META_STORE).put({
     category: 'total',
-    bytes: Math.max(0, metadata.total.bytes - storeUsage.bytes),
-    entries: Math.max(0, metadata.total.entries - storeUsage.entries),
-    updatedAt: Date.now(),
+    bytes: Math.max(0, metadata.total.bytes - storeUsage.bytes - indexUsage.bytes),
+    entries: Math.max(0, metadata.total.entries - storeUsage.entries - indexUsage.entries),
+    updatedAt: now,
   } satisfies CacheMeta);
   await transactionDone(tx);
 }
@@ -1080,7 +1184,7 @@ export async function getCachedEpg(url: string): Promise<CachedEpgEntry | null> 
   if (!raw) return null;
   return {
     url,
-    timestamp: finiteNumber(raw.timestamp, raw.updatedAt),
+    timestamp: cacheRecordTimestamp(raw),
     data: raw.data as ParsedEpg,
     filter: raw.filter as CachedEpgFilter | null | undefined,
   };
@@ -1092,8 +1196,8 @@ export async function setCachedEpg(
   filter?: CachedEpgFilter | null,
   timestamp = Date.now(),
   refreshIntervalMs: number | null = CONFIG.DEFAULT_EPG_REFRESH_INTERVAL_MS,
-): Promise<void> {
-  await putRaw(EPG_STORE, {
+): Promise<boolean> {
+  return putRaw(EPG_STORE, {
     url,
     timestamp,
     data,
@@ -1117,15 +1221,61 @@ export async function clearCachedEpg(): Promise<void> {
   }
 }
 
+async function readCatalogMetadata(key: string): Promise<CacheEntryMeta | null> {
+  try {
+    await ensureMetadata();
+    return await readEntryMeta(CATALOG_STORE, key);
+  } catch (error) {
+    log.warn(
+      'Catalog metadata read failed',
+      'event=xtream.cache.read.failed',
+      'operation=read',
+      'category=catalog',
+      'reason=metadata',
+      error,
+    );
+    return null;
+  }
+}
+
 export async function getCachedCatalog<T = unknown>(
   key: string,
 ): Promise<CachedCatalogEntry<T> | null> {
   const raw = await readRaw(CATALOG_STORE, key);
   if (!raw) return null;
+  const timestamp = cacheRecordTimestamp(raw);
+  const metadata = await readCatalogMetadata(key);
+  const state = (metadata?.timestamp === timestamp ? catalogListState(metadata.state) : undefined)
+    ?? catalogListState(raw.state);
+  rememberRecord(raw.data, { store: CATALOG_STORE, key, timestamp });
   return {
     key,
-    timestamp: finiteNumber(raw.timestamp, raw.updatedAt),
+    timestamp,
     data: raw.data as T,
+    ...(state ? { state } : {}),
+  };
+}
+
+export async function getCachedCatalogMetadata(key: string): Promise<CachedCatalogMetadata | null> {
+  const metadata = await readCatalogMetadata(key);
+  if (!metadata) return null;
+  if (metadata.timestamp === undefined) {
+    const cached = await getCachedCatalog(key);
+    return cached ? { timestamp: cached.timestamp, ...(cached.state ? { state: cached.state } : {}) } : null;
+  }
+  const state = catalogListState(metadata.state);
+  return { timestamp: metadata.timestamp, ...(state ? { state } : {}) };
+}
+
+function catalogListState(value: unknown): CatalogListState | undefined {
+  const state = value as Partial<CatalogListState> | null | undefined;
+  if (typeof state?.complete !== 'boolean'
+    || typeof state.refreshAfter !== 'number' || !Number.isFinite(state.refreshAfter)) return undefined;
+  return {
+    complete: state.complete,
+    refreshAfter: state.refreshAfter,
+    ...(typeof state.freshSince === 'number' && Number.isFinite(state.freshSince)
+      ? { freshSince: state.freshSince } : {}),
   };
 }
 
@@ -1133,13 +1283,61 @@ export async function setCachedCatalog(
   key: string,
   data: unknown,
   ttlMs: number | null = CONFIG.XTREAM.DEFAULT_CATALOG_REFRESH_INTERVAL_MS,
+  state?: CatalogListState,
 ): Promise<void> {
   const timestamp = Date.now();
-  await putRaw(CATALOG_STORE, {
+  const stored = await putRaw(CATALOG_STORE, {
     key,
     timestamp,
     data,
+    ...(state ? { state } : {}),
     expiresAt: ttlMs === null ? null : timestamp + ttlMs,
+  });
+  if (stored) rememberRecord(data, { store: CATALOG_STORE, key, timestamp });
+}
+
+export function setCachedCatalogState(
+  key: string,
+  sourceTimestamp: number,
+  state: CatalogListState,
+  ttlMs: number | null = CONFIG.XTREAM.DEFAULT_CATALOG_REFRESH_INTERVAL_MS,
+): Promise<boolean> {
+  const generation = catalogGeneration;
+  return enqueueMutation(async () => {
+    await ensureMetadata();
+    if (generation !== catalogGeneration) return false;
+    const db = await openDb();
+    if (!db) return false;
+    try {
+      const now = Date.now();
+      const tx = db.transaction(META_STORE, 'readwrite');
+      const metadata = tx.objectStore(META_STORE);
+      const request = metadata.get(entryMetaId(CATALOG_STORE, key));
+      let accepted = false;
+      request.onsuccess = () => {
+        const source: unknown = request.result;
+        if (generation !== catalogGeneration || !isCacheEntryMeta(source)
+          || source.timestamp !== sourceTimestamp) return;
+        metadata.put({
+          ...source,
+          state,
+          expiresAt: ttlMs === null ? null : now + ttlMs,
+          lastAccessedAt: now,
+        } satisfies CacheEntryMeta);
+        accepted = true;
+      };
+      await transactionDone(tx);
+      return accepted;
+    } catch (error) {
+      log.warn(
+        'Catalog cache write failed',
+        'event=xtream.cache.write.failed',
+        'operation=write',
+        'category=catalog',
+        error,
+      );
+      return false;
+    }
   });
 }
 
@@ -1314,12 +1512,13 @@ export async function getCachedPlaylist(
   const raw = await readRaw(PLAYLIST_STORE, PLAYLIST_CACHE_KEY);
   if (raw) {
     const payload = raw.data as CachedPlaylistPayload | undefined;
-    const timestamp = finiteNumber(raw.timestamp, raw.updatedAt);
+    const timestamp = cacheRecordTimestamp(raw);
     if (
       payload?.sourceSignature === playlistSourceSignature()
       && payload.channels?.length
       && (refreshIntervalMs === null || Date.now() - timestamp < refreshIntervalMs)
     ) {
+      rememberRecord(payload.channels, { store: PLAYLIST_STORE, key: PLAYLIST_CACHE_KEY, timestamp });
       return {
         channels: payload.channels,
         epgSources: payload.epgSources ?? [],
@@ -1364,6 +1563,9 @@ function setCachedPlaylistWithSignature(
       timestamp,
     } satisfies CachedPlaylistPayload,
     expiresAt: refreshIntervalMs === null ? null : timestamp + refreshIntervalMs,
+  }).then((stored) => {
+    if (stored) rememberRecord(channels, { store: PLAYLIST_STORE, key: PLAYLIST_CACHE_KEY, timestamp });
+    return stored;
   });
 }
 
@@ -1393,6 +1595,7 @@ export async function clearAllCachedData(): Promise<void> {
   discardScheduledPlaylist('cache_clear');
   playlistGeneration++;
   catalogGeneration++;
+  clearGeneration++;
   return enqueueMutation(async () => {
     try {
       localStorage.removeItem(CONFIG.STORAGE_PREFIX + 'cached_playlist');
@@ -1424,6 +1627,164 @@ export async function clearAllCachedData(): Promise<void> {
         err,
       );
       throw err;
+    }
+  });
+}
+
+export interface SearchIndexReservation {
+  generation: number;
+  sourceGeneration: number;
+  fields: CacheFields;
+  /** Older or expired index records removed to make way. */
+  evicted: number;
+}
+
+// A search index is the lowest-priority cache entry: it replaces older indexes
+// of its source and expired indexes, never evicts anything else, and is not
+// stored when it would take more than its share of the room left.
+export function reserveSearchIndex(
+  candidate: SearchIndexCandidate,
+): Promise<SearchIndexReservation | null> {
+  const generation = clearGeneration;
+  return enqueueMutation(async () => {
+    if (generation !== clearGeneration || !candidate.prefix
+        || candidate.key.indexOf(candidate.prefix) !== 0) {
+      return null;
+    }
+    const db = await openDb();
+    if (!db) return null;
+    await ensureMetadata();
+    const store = indexSourceStore(candidate.prefix);
+    const sourceGeneration = sourceClearGenerations[store] ?? 0;
+    if (SEARCH_SOURCE_STORES.indexOf(store as CacheStore) >= 0) {
+      // An index built from a record that was cleared or replaced meanwhile
+      // would be orphaned on arrival.
+      const source = await readEntryMeta(
+        store as CacheStore,
+        candidate.prefix.slice(store.length + 1, -1),
+      );
+      const version = candidate.key.slice(candidate.prefix.length).split('|')[0];
+      if (!source || (source.timestamp !== undefined && String(source.timestamp) !== version)) {
+        log.info(
+          'Search index not stored',
+          'event=search.index.persist.skipped',
+          'reason=source_changed',
+          `bytes=${String(candidate.bytes)}`,
+        );
+        return null;
+      }
+    }
+    const now = Date.now();
+    const replaced = (await collectCandidates()).filter(item =>
+      item.store === SEARCH_INDEX_STORE && (
+        (typeof item.key === 'string' && item.key.indexOf(candidate.prefix) === 0)
+        || (item.expiresAt !== null && item.expiresAt <= now)
+      ));
+    await deleteCandidates(replaced);
+    try {
+      // Also drops an index written without accounting, e.g. across a clear.
+      const tx = db.transaction(SEARCH_INDEX_STORE, 'readwrite');
+      tx.objectStore(SEARCH_INDEX_STORE)
+        .delete(IDBKeyRange.bound(candidate.prefix, `${candidate.prefix}\uffff`));
+      await transactionDone(tx);
+    } catch (err) {
+      log.warn(
+        'Search index cleanup failed',
+        'event=search.index.persist.skipped',
+        'reason=cleanup_failed',
+        `evicted=${String(replaced.length)}`,
+        err,
+      );
+      return null;
+    }
+    const metadata = await readMetadata();
+    const estimate = await cachedStorageEstimate();
+    let room = budgetForQuota(estimate.quota) - metadata.total.bytes;
+    if (estimate.quota !== null && estimate.usage !== null) {
+      room = Math.min(room, Math.floor(estimate.quota * 0.8) - estimate.usage);
+    }
+    if (candidate.bytes <= 0 || candidate.bytes > room * CONFIG.SEARCH.INDEX_BUDGET_SHARE) {
+      log.info(
+        'Search index not stored',
+        'event=search.index.persist.skipped',
+        'reason=budget',
+        `bytes=${String(candidate.bytes)}`,
+        `roomBytes=${String(Math.max(0, room))}`,
+        `evicted=${String(replaced.length)}`,
+      );
+      return null;
+    }
+    const fields: CacheFields = {
+      cacheCategory: 'search',
+      createdAt: now,
+      updatedAt: now,
+      lastAccessedAt: now,
+      expiresAt: now + ttlFor('search'),
+      byteSize: candidate.bytes,
+    };
+    const usage = metadata.categories.search;
+    try {
+      const tx = db.transaction(META_STORE, 'readwrite');
+      const metaStore = tx.objectStore(META_STORE);
+      metaStore.put(entryMeta(SEARCH_INDEX_STORE, candidate.key, { ...fields }));
+      metaStore.put({
+        category: 'search',
+        bytes: usage.bytes + candidate.bytes,
+        entries: usage.entries + 1,
+        updatedAt: now,
+      } satisfies CacheMeta);
+      metaStore.put({
+        category: 'total',
+        bytes: metadata.total.bytes + candidate.bytes,
+        entries: metadata.total.entries + 1,
+        updatedAt: now,
+      } satisfies CacheMeta);
+      await transactionDone(tx);
+    } catch (err) {
+      log.warn(
+        'Search index reservation failed',
+        'event=search.index.persist.skipped',
+        'reason=reservation_failed',
+        `evicted=${String(replaced.length)}`,
+        err,
+      );
+      return null;
+    }
+    return { generation, sourceGeneration, fields, evicted: replaced.length };
+  });
+}
+
+// Settles a reservation once the app worker's write finished: a failed write
+// gives the room back, and a write that raced a cache clear is removed.
+export function settleSearchIndex(
+  key: string,
+  reservation: SearchIndexReservation,
+  written: boolean,
+): Promise<void> {
+  return enqueueMutation(async () => {
+    const cleared = reservation.generation !== clearGeneration
+      || reservation.sourceGeneration !== (sourceClearGenerations[indexSourceStore(key)] ?? 0);
+    if (written && !cleared) return;
+    const db = await openDb();
+    if (!db) return;
+    const meta = cleared ? null : await readEntryMeta(SEARCH_INDEX_STORE, key);
+    if (meta) {
+      await deleteCandidates([{
+        store: SEARCH_INDEX_STORE,
+        key,
+        category: 'search',
+        byteSize: meta.byteSize,
+        expiresAt: meta.expiresAt,
+        lastAccessedAt: meta.lastAccessedAt,
+      }]);
+      return;
+    }
+    try {
+      const tx = db.transaction(SEARCH_INDEX_STORE, 'readwrite');
+      tx.objectStore(SEARCH_INDEX_STORE).delete(key);
+      await transactionDone(tx);
+    } catch {
+      // A later reservation for the same source drops it.
     }
   });
 }

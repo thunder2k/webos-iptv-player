@@ -1,4 +1,7 @@
-import { test, expect, type Page, routePlaylist, routeLiveManifest, LIVE_MANIFEST } from './helpers';
+import {
+  test, expect, type Page, routePlaylist, routeLiveManifest, LIVE_MANIFEST, enterTab, neuterVideo,
+  pressStepsAndReadPlayer,
+} from './helpers';
 
 // Catch-up resume markers + resume prompt. A fixed clock and a UTC device zone
 // keep wall-clock == absolute time so the past/live/future split is unambiguous.
@@ -181,4 +184,75 @@ test.describe('EPG catch-up resume prompt', () => {
     await expect(page.locator('#view-player')).toBeVisible();
     await expect(page.locator('.catchup-resume-prompt')).toBeHidden();
   });
+});
+
+test('a partial program opened from Search shows its resume prompt with the ring inside', async ({ page }) => {
+  await setup(page, partial);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterTab(page, 'search');
+  await page.locator('.tab-bar-search-input').fill('earlier');
+  const result = page.locator('#view-search .search-program-row').filter({ hasText: 'Earlier Show' });
+  await page.locator('.tab-bar-search-input').press('ArrowDown');
+  await expect(result).toHaveClass(/\bfocused\b/);
+  await page.keyboard.press('Enter');
+  const prompt = page.locator('.catchup-resume-prompt');
+  await expect(prompt).toBeVisible();
+
+  await page.keyboard.press('ArrowRight');
+  await expect(prompt.locator('.catchup-resume-btn[data-action="start-over"]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('#view-search .focused')).toHaveCount(0);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter');
+  await expect(prompt).toBeHidden();
+  await expect(page.locator('#view-search')).toBeVisible();
+  await expect(page.locator('#view-player')).toBeHidden();
+  await expect(result).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+});
+
+// Catch-up from the EPG on a fake element with a known duration, so the OSD
+// can seek and the Pause path through the app sets the user-paused state.
+async function startFakeCatchup(page: Page): Promise<void> {
+  await setup(page);
+  await neuterVideo(page);
+  await openEpg(page);
+  await focusPastProgramme(page);
+  await expect(page.locator('#view-player')).toBeVisible();
+  await page.locator('#video-player').evaluate((video: HTMLVideoElement) => {
+    let paused = false;
+    let time = 0;
+    Object.defineProperty(video, 'duration', { configurable: true, get: () => 3600 });
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true, get: () => time, set: (t: number) => { time = t; },
+    });
+    Object.defineProperty(video, 'paused', { configurable: true, get: () => paused });
+    video.play = () => { paused = false; return Promise.resolve(); };
+    video.pause = () => { paused = true; };
+  });
+}
+
+const [ENTER, RIGHT, BACK, YELLOW] = [13, 39, 461, 405];
+
+test('catch-up Back leaves playback even with the OSD up', async ({ page }) => {
+  await startFakeCatchup(page);
+  const [shown, left] = await pressStepsAndReadPlayer(page, [[YELLOW], [BACK]]);
+  expect(shown).toMatchObject({ osd: true, paused: false });
+  expect(left).toMatchObject({ osdBefore: true, player: false });
+  await expect(page.locator('#view-channels')).toBeVisible();
+});
+
+test('catch-up Back hides a paused OSD, so Right reaches the menu, then leaves', async ({ page }) => {
+  await startFakeCatchup(page);
+  const [paused, seeked, hidden, menu, closed, left] = await pressStepsAndReadPlayer(page, [
+    [YELLOW, ENTER], [RIGHT], [BACK], [RIGHT], [BACK], [BACK],
+  ]);
+  expect(paused).toMatchObject({ osd: true, message: false, paused: true, currentTime: 0 });
+  expect(seeked).toMatchObject({ osd: true, menu: false, paused: true });
+  expect(seeked.currentTime).toBeGreaterThan(0);
+  expect(hidden).toMatchObject({ osdBefore: true, osd: false, player: true, paused: true });
+  expect(menu).toMatchObject({ osd: false, menu: true, paused: true, currentTime: seeked.currentTime });
+  expect(closed).toMatchObject({ osd: false, menu: false, player: true });
+  expect(left.player).toBe(false);
+  await expect(page.locator('#view-channels')).toBeVisible();
 });

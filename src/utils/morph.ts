@@ -1,5 +1,7 @@
 import { Safe } from './dom';
 import { createLogger } from './logger';
+import { isRingAttr, ringClasses } from '../navigation/focus-ring';
+import { Focus } from '../navigation/focus-scope';
 
 const log = createLogger('morph');
 
@@ -8,8 +10,10 @@ const log = createLogger('morph');
  * described by `next` (the escaped output of the `html` tagged template),
  * reusing existing nodes wherever possible.
  *
- * Reused nodes keep their listeners, scroll position, focus, and any classes
- * added imperatively (template `class` is authoritative — see syncAttributes).
+ * Reused nodes keep their listeners, scroll position, and focus. Template
+ * `class` is authoritative, except that a node keeps the ring a focus scope
+ * painted on it; the scopes move or drop their ring by key once the patch
+ * lands.
  *
  * List items SHOULD carry a `data-key` with a stable semantic id (channel id,
  * group name, day ISO, programme start ms). Unkeyed children fall back to
@@ -18,8 +22,20 @@ const log = createLogger('morph');
 export function morph(parent: HTMLElement, next: Safe): void {
   const tmpl = document.createElement('template');
   tmpl.innerHTML = next.value;
-  patchChildren(parent, Array.from(tmpl.content.childNodes));
+  const outer = kept;
+  kept = [];
+  let held: Element[];
+  try {
+    patchChildren(parent, Array.from(tmpl.content.childNodes));
+  } finally {
+    held = kept;
+    kept = outer;
+  }
+  Focus.afterMorph(parent, held);
 }
+
+// Nodes whose ring the template dropped but the current patch kept.
+let kept: Element[] = [];
 
 const ELEMENT = 1;
 const TEXT = 3;
@@ -146,13 +162,31 @@ function syncAttributes(oldEl: Element, newEl: Element): void {
   const oldAttrs = Array.from(oldEl.attributes);
 
   for (const a of newAttrs) {
-    if (oldEl.getAttribute(a.name) !== a.value) {
-      oldEl.setAttribute(a.name, a.value);
+    const value = a.name === 'class' ? classWithRing(oldEl, a.value) : a.value;
+    if (oldEl.getAttribute(a.name) !== value) {
+      oldEl.setAttribute(a.name, value);
     }
   }
   for (const a of oldAttrs) {
-    if (!newEl.hasAttribute(a.name)) {
-      oldEl.removeAttribute(a.name);
-    }
+    if (newEl.hasAttribute(a.name) || isRingAttr(a.name)) continue;
+    const ringOnly = a.name === 'class' ? classWithRing(oldEl, '') : '';
+    if (ringOnly) oldEl.setAttribute(a.name, ringOnly);
+    else oldEl.removeAttribute(a.name);
   }
+}
+
+// A style recalc between the patch and the scopes' pass would otherwise see
+// the ring stripped and restart its transitions, then again once repainted.
+function classWithRing(el: Element, next: string): string {
+  const ring = ringClasses(el);
+  if (!ring.length || !Focus.paints(el)) return next;
+  const tokens = next.split(/\s+/).filter(Boolean);
+  let added = false;
+  for (const name of ring) {
+    if (tokens.indexOf(name) >= 0) continue;
+    tokens.push(name);
+    added = true;
+  }
+  if (added) kept.push(el);
+  return tokens.join(' ');
 }

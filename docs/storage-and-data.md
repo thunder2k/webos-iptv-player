@@ -45,7 +45,7 @@ flowchart LR
   subgraph IDB["IndexedDB: iptv"]
     direction TB
     UserStores["User stores<br/>favorites / reminders / channel state<br/>watchlist / progress / history / subtitle picks"]
-    CacheStores["Cache stores<br/>playlist / EPG / catalog / stream MIME<br/>subtitles / channel health / metadata"]
+    CacheStores["Cache stores<br/>playlist / EPG / catalog / stream MIME<br/>subtitles / channel health / search index / metadata"]
   end
 
   Activity["Activity Manager<br/>reminder schedules"]
@@ -163,7 +163,8 @@ eviction algorithm.
 | `stream-mime-cache` | `key` | `expiresAt`, `lastAccessedAt` | Normalized provider route mapped to detected MIME and probe time; accounted and evicted in the `catalog` category |
 | `subtitle-cache` | `key` | `expiresAt`, `lastAccessedAt` | Provider/result key and downloaded SRT, WebVTT, ASS, or SSA text |
 | `channel-health-cache` | `key` | `expiresAt`, `lastAccessedAt` | Per-channel healthy, suspect, or unavailable status from the latest stream check |
-| `cache-meta` | `category` | None | `{bytes, entries, updatedAt}` for `playlist`, `epg`, `catalog`, `subtitle`, `health`, and `total` |
+| `search-index-cache` | `key` | `expiresAt`, `lastAccessedAt` | Folded Search text of one playlist, guide, or catalog cache record, keyed by source store, source key, source timestamp, and index format; one string plus `Uint32Array` offsets. Written by the app worker after the page reserves room; clearing a source store removes its indexes |
+| `cache-meta` | `category` | None | `{bytes, entries, updatedAt}` for `playlist`, `epg`, `catalog`, `subtitle`, `health`, `search`, and `total` |
 
 Known `catalog-cache` key families are:
 
@@ -223,6 +224,7 @@ invalidates a structurally valid but now unrelated parsed playlist.
 | Stream MIME probe | 7 days | Expired reads become misses; records participate in catalog LRU and accounting |
 | Downloaded subtitle | 30 days | An expired read becomes a miss and deletes the record |
 | Channel health result | 30 days | Expired results are discarded; a new health check replaces results for checked channels |
+| Search index | 7 days | Used only while its source record's key, timestamp, and the index format still match; otherwise rebuilt from the source record. Built ahead of Search while the UI is idle after startup and after each playlist, guide, catalog, or account change |
 
 Reads update `lastAccessedAt` in a best-effort follow-up transaction. Failure to
 write this bookkeeping does not turn a valid cache hit into a miss.
@@ -279,6 +281,7 @@ breakdown:
 - Catalog and media metadata
 - Subtitles
 - Channel health results
+- Search index
 
 The second number is a **soft cache budget**, not reserved or currently used
 space. For example, `1.8 MiB / 75 MiB` means the managed cache currently uses
@@ -309,10 +312,15 @@ quota reported by webOS.
 Cleanup removes data in this order:
 
 1. Expired entries.
-2. Least-recently-used subtitles.
-3. Least-recently-used catalog and media metadata.
-4. Least-recently-used program guides.
-5. Least-recently-used parsed playlists.
+2. Least-recently-used Search indexes.
+3. Least-recently-used subtitles.
+4. Least-recently-used catalog and media metadata.
+5. Least-recently-used program guides.
+6. Least-recently-used parsed playlists.
+
+A Search index never causes other data to be removed: it replaces older
+indexes of the same source and is skipped when it would take more than 10% of
+the room left in the budget. A failed index write is dropped without a retry.
 
 This order favors quick startup and live TV while discarding content that is
 usually cheap to download again. If webOS still rejects a write because storage

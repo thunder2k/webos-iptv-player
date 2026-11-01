@@ -15,6 +15,12 @@ loading screen. **Don't change the target without reason.**
   denylist in `eslint.config.mjs`, derived from the shared `DENYLIST` in
   `scripts/compat-gate.mjs` and keyed to the `chrome 53` browserslist. It
   flags `.flat()`, `.at()`, `replaceAll`, `structuredClone`, and so on.
+  Its `call-option` entries also flag option-object properties that
+  Chromium 53 silently ignores or misreads on an existing call:
+  `addEventListener(…, { once })` (`once` is ignored; the listener stays —
+  use `onceTransitionEnd` or remove it by hand) and
+  `focus({ preventScroll })` (ignored; use `focusWithoutScroll`, both in
+  `src/utils/dom.ts`).
 - **Bundle scan** (build time): `esbuild.config.mjs` AST-scans a
   non-minified app bundle (`scanBundle`, using the TypeScript compiler API,
   so string/comment hits and `typeof` guards are ignored). It catches
@@ -135,6 +141,11 @@ degrades both axes from `scripts/chromium-53-simulation.mjs`:
   `scripts/serve.mjs` prepends to its bundle. `KEEP_GLOBALS` exempts only
   what the harness or desktop preview needs: exempting `AbortController` for
   hls.js once silently cost the app's own polyfill its coverage.
+- **Not modeled: call options.** Deleting an API cannot make an engine
+  ignore a dictionary member it predates, so `{ once }` and
+  `{ preventScroll }` behave natively here. Cover such fallbacks with a
+  unit test that models the old engine (a stub that drops the option), as
+  `player-menu.test.ts` and `channel-list-editor.test.ts` do.
 
 ## Writing E2E tests
 

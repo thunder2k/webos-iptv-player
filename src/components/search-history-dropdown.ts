@@ -6,6 +6,7 @@ import { StorageService } from '../services/storage-service';
 import { t } from '../i18n';
 import { TRASH_ICON } from './icons';
 import { createLogger } from '../utils/logger';
+import { Focus, Tier, type FocusScope } from '../navigation/focus-scope';
 
 const log = createLogger('SearchHistory');
 
@@ -33,6 +34,7 @@ export interface SearchHistoryHandlers {
 export class SearchHistoryDropdown {
   private readonly root: HTMLElement;
   private readonly nav: SpatialNav;
+  private readonly scope: FocusScope;
   private _open = false;
 
   constructor(private handlers: SearchHistoryHandlers) {
@@ -40,11 +42,29 @@ export class SearchHistoryDropdown {
     this.root.className = 'search-history-dropdown hidden';
     this.root.setAttribute('data-self-activate', '');
     document.body.appendChild(this.root);
-    this.nav = new SpatialNav(this.root);
     this.root.addEventListener('click', (e: MouseEvent) => this.onClick(e));
+    // Takes the keys once the search box hands them down; the bar above it
+    // keeps them while the box has the caret.
+    this.scope = Focus.register({
+      id: 'search.history',
+      root: this.root,
+      restrict: 'self-only',
+      tier: Tier.overlay,
+      onAction: (action) => this.handleAction(action),
+      defaultKey: () => {
+        const el = this.nav.focused;
+        return el && this.root.contains(el) ? el.dataset.key ?? null : null;
+      },
+    });
+    this.nav = new SpatialNav(this.root, undefined, { scope: this.scope });
   }
 
   get isOpen(): boolean { return this._open; }
+
+  /** True when a click on `hit` dismisses search (it lands on the scrim). */
+  dismissedBy(hit: Element): boolean {
+    return this.root.contains(hit) && !!hit.closest('.search-history-scrim');
+  }
 
   /** Opens under the search box when there is history; false when there is none. */
   open(anchor: SearchHistoryAnchor): boolean {
@@ -56,6 +76,7 @@ export class SearchHistoryDropdown {
     if (!this._open) log.debug('Recent searches opened', 'event=search.history.opened', `items=${String(items)}`);
     this._open = true;
     this.render();
+    Focus.push(this.scope);
     this.root.classList.remove('hidden', 'search-history-dropdown--menu');
     const panel = this.root.querySelector<HTMLElement>('.search-history-panel')!;
     panel.style.top = `${anchor.bottom + 12}px`;
@@ -72,6 +93,7 @@ export class SearchHistoryDropdown {
     const wasOpen = this._open;
     if (wasOpen) log.debug('Recent searches closed', 'event=search.history.closed', `reason=${reason}`);
     this._open = false;
+    Focus.pop(this.scope);
     this.nav.focus(null);
     // The account menu hides only the panel: the scrim stays, so a click
     // outside the menu dismisses search instead of reaching the view behind.
@@ -160,7 +182,7 @@ export class SearchHistoryDropdown {
     );
     if (!hit || !inside) return;
     if (el) {
-      this.nav.focus(el);
+      this.nav.focus(el, 'pointer');
       this.activate(el, 'pointer');
     } else if (!hit.closest('.search-history-panel')) {
       this.close('dismiss');
@@ -210,9 +232,6 @@ export class SearchHistoryDropdown {
         </div>
       </div>
     `);
-    this.nav.clearDetachedFocus();
-    // morph strips the ring from a tile that stays focused across a re-anchor.
-    if (this.nav.focused) this.nav.focus(this.nav.focused);
   }
 }
 

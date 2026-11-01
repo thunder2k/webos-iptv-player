@@ -311,6 +311,76 @@ describe('XtreamClient VOD', () => {
     }]);
   });
 
+  describe('VOD sort metadata', () => {
+    const vodRow = (extra: Record<string, unknown>, id = 10) => ({
+      stream_id: id, name: `Movie ${id}`, category_id: '1', ...extra,
+    });
+    const mapOne = async (extra: Record<string, unknown>) => {
+      fetchTextMock.mockResolvedValue(JSON.stringify([vodRow(extra)]));
+      const [item] = await createXtreamClient(creds).getVodStreams('1');
+      return { addedAt: item.addedAt, year: item.year, keys: Object.keys(item) };
+    };
+
+    it('converts Unix-second and millisecond added values to milliseconds', async () => {
+      expect((await mapOne({ added: '1700000000' })).addedAt).toBe(1700000000000);
+      expect((await mapOne({ added: 1700000000 })).addedAt).toBe(1700000000000);
+      expect((await mapOne({ added: ' 1700000000 ' })).addedAt).toBe(1700000000000);
+      expect((await mapOne({ added: '1700000000123' })).addedAt).toBe(1700000000123);
+    });
+
+    it('parses ISO-like added dates', async () => {
+      expect((await mapOne({ added: '2023-05-01' })).addedAt).toBe(Date.parse('2023-05-01'));
+      expect((await mapOne({ added: '2023-05-01T10:20:30Z' })).addedAt)
+        .toBe(Date.UTC(2023, 4, 1, 10, 20, 30));
+    });
+
+    it('omits invalid or non-positive added values', async () => {
+      for (const added of ['', '   ', '0', '-5', 'abc', '2023-13-45', null, {}, true]) {
+        const mapped = await mapOne({ added });
+        expect(mapped.addedAt).toBeUndefined();
+        expect(mapped.keys).not.toContain('addedAt');
+      }
+    });
+
+    it('does not use last_modified for VOD added time', async () => {
+      expect((await mapOne({ last_modified: '1700000000' })).addedAt).toBeUndefined();
+    });
+
+    it('reads the year from year and release-date aliases in order', async () => {
+      expect((await mapOne({ year: '2020' })).year).toBe(2020);
+      expect((await mapOne({ year: 2019 })).year).toBe(2019);
+      expect((await mapOne({ releaseDate: '2018-03-04' })).year).toBe(2018);
+      expect((await mapOne({ release_date: '2017/01/02' })).year).toBe(2017);
+      expect((await mapOne({ releasedate: '2016' })).year).toBe(2016);
+      expect((await mapOne({ year: '2021', releaseDate: '2010-01-01' })).year).toBe(2021);
+    });
+
+    it('falls back to a later alias when an earlier one is unusable', async () => {
+      expect((await mapOne({ year: '', releaseDate: '2015-06-07' })).year).toBe(2015);
+      expect((await mapOne({ year: 'N/A', release_date: '2014-01-01' })).year).toBe(2014);
+      expect((await mapOne({ year: '0000', releasedate: '2013' })).year).toBe(2013);
+    });
+
+    it('omits malformed years', async () => {
+      for (const year of ['', '0000', '20', '20201', 'May 2020', '07/05/2020', null, {}]) {
+        const mapped = await mapOne({ year });
+        expect(mapped.year).toBeUndefined();
+        expect(mapped.keys).not.toContain('year');
+      }
+    });
+
+    it('maps each list item independently without detail requests', async () => {
+      fetchTextMock.mockResolvedValue(JSON.stringify([
+        vodRow({ added: '1700000000', year: '2020' }, 1),
+        vodRow({}, 2),
+      ]));
+      const items = await createXtreamClient(creds).getVodStreams('1');
+      expect(fetchTextMock).toHaveBeenCalledTimes(1);
+      expect(items.map(item => [item.addedAt, item.year]))
+        .toEqual([[1700000000000, 2020], [undefined, undefined]]);
+    });
+  });
+
   it('getVodStreams with no category omits the category_id param', async () => {
     fetchTextMock.mockResolvedValue('[]');
     await createXtreamClient(creds).getVodStreams();
@@ -348,6 +418,35 @@ describe('XtreamClient VOD', () => {
     await expect(createXtreamClient(creds).getVodInfo('10'))
       .rejects.toMatchObject({ code: 'invalid_json' });
   });
+
+  it.each([{ user_info: { auth: 0 } }, [{ error: 'unavailable' }], null])(
+    'rejects catalog error objects and malformed arrays instead of treating them as empty (%j)',
+    async payload => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        fetchTextMock.mockResolvedValue(JSON.stringify(payload));
+        const client = createXtreamClient(creds);
+        await expect(client.getVodCategories()).rejects.toMatchObject({ code: 'request_failed' });
+        await expect(client.getVodStreams('1')).rejects.toMatchObject({ code: 'request_failed' });
+        await expect(client.getSeriesCategories()).rejects.toMatchObject({ code: 'request_failed' });
+        await expect(client.getSeries('1')).rejects.toMatchObject({ code: 'request_failed' });
+        expect(warn).toHaveBeenCalledWith(
+          '[Xtream]',
+          'Xtream request failed',
+          'event=xtream.request.failed',
+          'endpoint=get_vod_streams',
+          'code=request_failed',
+          'timeoutMs=30000',
+          `limitBytes=${CONFIG.XTREAM.CATALOG_MAX_BYTES}`,
+        );
+        fetchTextMock.mockResolvedValue('[]');
+        expect(await client.getVodStreams('1')).toEqual([]);
+        expect(await client.getSeries('1')).toEqual([]);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it('bounds catalog responses and forwards cancellation', async () => {
     const controller = new AbortController();
@@ -466,6 +565,27 @@ describe('XtreamClient Series', () => {
       accountId: 'acc1', seriesId: '7', name: 'Series One', poster: 'http://host/c.png',
       rating: '8', categoryId: '2',
     }]);
+  });
+
+  it('maps series added time from added, falling back to last_modified', async () => {
+    fetchTextMock.mockResolvedValue(JSON.stringify([
+      { series_id: 1, name: 'S1', category_id: '2', added: '1600000000', last_modified: '1700000000' },
+      { series_id: 2, name: 'S2', category_id: '2', last_modified: '1700000000' },
+      { series_id: 3, name: 'S3', category_id: '2', added: 'bad', last_modified: '1700000001' },
+      { series_id: 4, name: 'S4', category_id: '2', added: '', last_modified: '' },
+      { series_id: 5, name: 'S5', category_id: '2', year: '2011', releaseDate: '2010-01-01' },
+      { series_id: 6, name: 'S6', category_id: '2', release_date: '2012-02-03' },
+    ]));
+    const items = await createXtreamClient(creds).getSeries('2');
+    expect(items.map(item => [item.seriesId, item.addedAt, item.year])).toEqual([
+      ['1', 1600000000000, undefined],
+      ['2', 1700000000000, undefined],
+      ['3', 1700000001000, undefined],
+      ['4', undefined, undefined],
+      ['5', undefined, 2011],
+      ['6', undefined, 2012],
+    ]);
+    expect(Object.keys(items[3])).not.toContain('addedAt');
   });
 
   it('parses series info into sorted seasons + episodesBySeason', async () => {

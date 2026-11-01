@@ -1,6 +1,6 @@
 import type { Action, Channel, ChannelGroupId } from '../types';
 import type { SpatialNav } from '../navigation/spatial-nav';
-import { html, raw, type Safe } from '../utils/dom';
+import { focusWithoutScroll, html, raw, type Safe } from '../utils/dom';
 import { channelKey, groupDisplayLabel } from '../utils/channel';
 import { PlaylistService } from '../services/playlist-service';
 import { ChannelCustomizationService, groupKeyOf } from '../services/channel-customization';
@@ -18,7 +18,9 @@ import { CONFIG } from '../config';
 import { VirtualList } from '../utils/virtual-list';
 import { formatEpgOffset } from '../utils/epg-offset';
 import { WorkerMappingSearch } from '../workers/mapping-search-client';
+import { isIndexRetryPending } from '../workers/index-retry';
 import { createLogger } from '../utils/logger';
+import { Focus } from '../navigation/focus-scope';
 
 const log = createLogger('ChannelEditor');
 
@@ -35,20 +37,25 @@ interface ChannelListEditorOptions {
   getCurrentGroup: () => ChannelGroupId;
   getCurrentPlaylist: () => string;
   setLocation: (group: ChannelGroupId, playlist: string) => void;
+  // A row's place in its list, whether or not it is rendered; -1 if absent.
+  rowPosition: (key: string) => number;
   // Edit mode behind the parental guard; never call enterEditMode directly.
   requestEditMode: (group: ChannelGroupId) => void;
 }
 
-const DRAG_START_DISTANCE = 8;
 const EPG_OPTION_HEIGHT = 72;
 const EPG_VIEWPORT_HEIGHT = 420;
 const EPG_OVERSCAN = 3;
+// A Magic Remote OK wobbles the pointer a few pixels; only a longer move drags.
+const DRAG_START_DISTANCE = 8;
 
 export class ChannelListEditor {
   private favoriteSelection: Set<string> | null = null;
   private editing = false;
   private grabbed: EditTarget | null = null;
   private renaming: EditTarget | null = null;
+  // The row, and its field, can scroll out of the rendered list mid-rename.
+  private renameDraft: string | null = null;
   private groupPickerFor: string | null = null;
   private newGroupOpen = false;
   private epgPickerFor: string | null = null;
@@ -77,10 +84,18 @@ export class ChannelListEditor {
   private refocus: string | null = null;
   private dragCandidate: DragCandidate | null = null;
   private pointerDragging = false;
+  // A row hovered before the pointer moved far enough to drag; the move
+  // that follows the hover rechecks it.
+  private pendingDragOver: HTMLElement | null = null;
+  private readonly onDocumentMouseUp = (): void => this.finishPointerDrag();
+  private readonly stopPointerFollow: () => void;
   private suppressPointerClick = false;
   private pointerClickReset: ReturnType<typeof setTimeout> | null = null;
   private lastDragPlacement = '';
   private editActionTarget: EditTarget | null = null;
+  // The caret blurTextInput took, so a field given back keeps the draft's
+  // selection instead of selecting it all again.
+  private savedCaret: { input: HTMLInputElement; field: string; start: number; end: number } | null = null;
 
   constructor(
     private container: HTMLElement,
@@ -101,11 +116,22 @@ export class ChannelListEditor {
     this.container.addEventListener('mousedown', (event: MouseEvent) => {
       this.onPointerDown(event);
     });
-    this.container.addEventListener('mousemove', (event: MouseEvent) => {
-      if (event.target instanceof HTMLElement) this.updateEpgPointerHover(event.target);
-      this.onPointerMove(event);
+    this.container.addEventListener('nav:unhover', (event: Event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.classList.contains('pointer-hovered')) {
+        this.updateEpgPointerHover(null);
+      }
     });
-    this.container.addEventListener('mouseup', () => this.finishPointerDrag());
+    // The drag follows the rows the pointer hovers, and a release anywhere
+    // (even off the list) drops it.
+    this.container.addEventListener('nav:hover', (event: Event) => {
+      if (event.target instanceof HTMLElement) this.dragOver(event.target);
+    });
+    document.addEventListener('mouseup', this.onDocumentMouseUp);
+    this.stopPointerFollow = Focus.onPointer((x, y) => {
+      const el = this.pendingDragOver;
+      if (el) this.dragOver(el, { x, y });
+    });
     this.container.addEventListener('click', (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
@@ -145,6 +171,11 @@ export class ChannelListEditor {
     });
     this.container.addEventListener('input', (event: Event) => {
       const input = event.target;
+      if (input instanceof HTMLInputElement && this.renaming && !this.newGroupOpen
+          && input.classList.contains('edit-text-input')) {
+        this.renameDraft = input.value;
+        return;
+      }
       if (!(input instanceof HTMLInputElement)
           || !input.classList.contains('epg-mapping-search')) return;
       this.epgQuery = input.value;
@@ -189,20 +220,22 @@ export class ChannelListEditor {
         this.options.render();
       });
     }, true);
-    document.addEventListener('keyboardStateChange', (event: Event) => {
-      const visible = (event as CustomEvent<{ visibility?: boolean }>).detail?.visibility;
-      if (!this.epgPickerFor || typeof visible !== 'boolean') return;
-      this.epgKeyboardVisible = visible;
-      if (!visible) this.updateEpgPointerHover(null);
-      this.container.querySelector('.epg-mapping-picker')
-        ?.classList.toggle('keyboard-visible', visible);
-      if (this.epgKeyboardFrame !== null) cancelAnimationFrame(this.epgKeyboardFrame);
-      this.epgKeyboardFrame = requestAnimationFrame(() => {
-        this.epgKeyboardFrame = null;
-        if (this.epgPickerFor) this.options.render();
-      });
-    });
+    document.addEventListener('keyboardStateChange', this.onKeyboardStateChange);
   }
+
+  private readonly onKeyboardStateChange = (event: Event): void => {
+    const visible = (event as CustomEvent<{ visibility?: boolean }>).detail?.visibility;
+    if (!this.epgPickerFor || typeof visible !== 'boolean') return;
+    this.epgKeyboardVisible = visible;
+    if (!visible) this.updateEpgPointerHover(null);
+    this.container.querySelector('.epg-mapping-picker')
+      ?.classList.toggle('keyboard-visible', visible);
+    if (this.epgKeyboardFrame !== null) cancelAnimationFrame(this.epgKeyboardFrame);
+    this.epgKeyboardFrame = requestAnimationFrame(() => {
+      this.epgKeyboardFrame = null;
+      if (this.epgPickerFor) this.options.render();
+    });
+  };
 
   get isEditing(): boolean {
     return this.editing || this.favoriteSelection !== null;
@@ -214,6 +247,16 @@ export class ChannelListEditor {
 
   get isManagingFavorites(): boolean {
     return this.favoriteSelection !== null;
+  }
+
+  get hasGrabbed(): boolean {
+    return this.grabbed !== null;
+  }
+
+  // A text field or picker takes every key, whatever row holds focus.
+  get ownsInput(): boolean {
+    return this.renaming !== null || this.newGroupOpen || this.groupPickerFor !== null
+      || this.epgPickerFor !== null || this.epgOffsetFor !== null;
   }
 
   get hasGroupPicker(): boolean {
@@ -257,7 +300,11 @@ export class ChannelListEditor {
     this.editing = false;
     this.favoriteSelection = null;
     this.grabbed = null;
+    // A press still held would otherwise start a drag outside edit mode.
+    this.dragCandidate = null;
+    this.pendingDragOver = null;
     this.renaming = null;
+    this.renameDraft = null;
     this.groupPickerFor = null;
     this.newGroupOpen = false;
     this.epgPickerFor = null;
@@ -320,6 +367,7 @@ export class ChannelListEditor {
     }
     if (this.renaming) {
       this.renaming = null;
+      this.renameDraft = null;
       this.options.render();
       return true;
     }
@@ -367,6 +415,7 @@ export class ChannelListEditor {
 
   finishPointerDrag(): void {
     this.dragCandidate = null;
+    this.pendingDragOver = null;
     this.lastDragPlacement = '';
     if (!this.pointerDragging) return;
     this.pointerDragging = false;
@@ -376,6 +425,36 @@ export class ChannelListEditor {
       this.suppressPointerClick = false;
       this.pointerClickReset = null;
     }, 0);
+  }
+
+  // Drop the listeners kept outside the list, once a new list replaces this one.
+  dispose(): void {
+    this.finishPointerDrag();
+    if (this.pointerClickReset) clearTimeout(this.pointerClickReset);
+    this.pointerClickReset = null;
+    document.removeEventListener('mouseup', this.onDocumentMouseUp);
+    document.removeEventListener('keyboardStateChange', this.onKeyboardStateChange);
+    this.stopPointerFollow();
+  }
+
+  // Aim the next render's focus at the grabbed row, wherever it scrolled.
+  refocusGrabbed(kind: EditTarget['kind']): boolean {
+    const grabbed = this.grabbed;
+    if (grabbed?.kind !== kind) return false;
+    const key = this.refocusKeyFor(grabbed);
+    if (!key) return false;
+    this.refocus = key;
+    return true;
+  }
+
+  private refocusKeyFor(target: EditTarget): string | null {
+    if (target.kind === 'channel') {
+      const index = PlaylistService.indexOfKey(target.key);
+      return index < 0 ? null : `ch:${String(index)}`;
+    }
+    const display = PlaylistService.getGroupsForPlaylist(this.options.getCurrentPlaylist() || undefined)
+      .find(name => this.groupKeyForDisplay(name) === target.key);
+    return display === undefined ? null : `g:source:${display}`;
   }
 
   takeRefocusKey(previous: string | null): string | null {
@@ -407,15 +486,45 @@ export class ChannelListEditor {
       const option = this.container.querySelector<HTMLElement>(
         `[data-epg-position="${String(this.epgFocusPosition)}"]`,
       );
-      if (option && document.activeElement !== option) option.focus({ preventScroll: true });
+      if (option && document.activeElement !== option) focusWithoutScroll(option);
       return;
     }
     const input = this.container.querySelector<HTMLInputElement>(
       '.edit-text-input, .epg-mapping-search',
     );
     if (input && document.activeElement !== input) {
+      const saved = this.savedCaret;
+      this.savedCaret = null;
       input.focus();
-      input.select();
+      if (saved && saved.input === input && saved.field === this.textFieldId()) {
+        input.setSelectionRange(saved.start, saved.end);
+      } else {
+        input.select();
+      }
+    }
+  }
+
+  private textFieldId(): string {
+    if (this.epgPickerFor) return `epg:${this.epgPickerFor}`;
+    if (this.newGroupOpen) return 'new-group';
+    return this.renaming ? `rename:${this.renaming.kind}:${this.renaming.key}` : '';
+  }
+
+  // A caret left in a field would keep the arrows and OK from whatever
+  // takes the keys next, such as a prompt a timer raises.
+  blurTextInput(): void {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && this.container.contains(active)
+        && active.matches('.edit-text-input, .epg-mapping-search')) {
+      if (active instanceof HTMLInputElement) {
+        this.savedCaret = {
+          input: active,
+          field: this.textFieldId(),
+          start: active.selectionStart ?? active.value.length,
+          end: active.selectionEnd ?? active.value.length,
+        };
+      }
+      active.blur();
     }
   }
 
@@ -429,6 +538,10 @@ export class ChannelListEditor {
 
   isGroupGrabbed(key: string): boolean {
     return this.grabbed?.kind === 'group' && this.grabbed.key === key;
+  }
+
+  renameValue(current: string): string {
+    return this.renameDraft ?? current;
   }
 
   isGroupRenaming(key: string): boolean {
@@ -773,6 +886,7 @@ export class ChannelListEditor {
       delta > 0,
     );
     this.applyEdit();
+    this.refocus = this.refocusKeyFor(grabbed);
     this.options.render();
   }
 
@@ -787,14 +901,19 @@ export class ChannelListEditor {
     this.lastDragPlacement = '';
   }
 
-  private onPointerMove(event: MouseEvent): void {
+  private dragOver(el: HTMLElement, at = Focus.pointerPosition()): void {
+    this.pendingDragOver = null;
     const candidate = this.dragCandidate;
-    if (!candidate) return;
+    if (!candidate || !this.container.contains(el)) return;
+    const target = this.editTargetForElement(el);
+    if (!target || target.kind !== candidate.target.kind
+        || target.key === candidate.target.key) return;
 
     if (!this.pointerDragging) {
-      const dx = event.clientX - candidate.x;
-      const dy = event.clientY - candidate.y;
-      if (dx * dx + dy * dy < DRAG_START_DISTANCE * DRAG_START_DISTANCE) return;
+      if (!at || Math.abs(at.x - candidate.x) + Math.abs(at.y - candidate.y) < DRAG_START_DISTANCE) {
+        this.pendingDragOver = el;
+        return;
+      }
       this.pointerDragging = true;
       if (this.pointerClickReset) clearTimeout(this.pointerClickReset);
       this.pointerClickReset = null;
@@ -804,16 +923,23 @@ export class ChannelListEditor {
       this.options.render();
     }
 
-    const el = this.focusableAt(event.clientX, event.clientY);
-    const target = el ? this.editTargetForElement(el) : null;
-    if (!el || !target || target.kind !== candidate.target.kind
-        || target.key === candidate.target.key) return;
-    const rect = el.getBoundingClientRect();
-    const after = event.clientY >= rect.top + rect.height / 2;
+    const after = this.rowPosition(el) > this.grabbedPosition();
     const placement = `${target.kind}:${target.key}:${after ? 'after' : 'before'}`;
     if (placement === this.lastDragPlacement) return;
     this.lastDragPlacement = placement;
     this.movePointerGrabbed(target, after);
+  }
+
+  private rowPosition(el: Element): number {
+    const row = el as HTMLElement;
+    return parseInt(row.dataset.listPosition ?? row.dataset.groupPosition ?? '-1', 10);
+  }
+
+  // Where the grabbed row sits now, even scrolled out of the rendered
+  // window; rows below it take it after them.
+  private grabbedPosition(): number {
+    const key = this.grabbed ? this.refocusKeyFor(this.grabbed) : null;
+    return key ? this.options.rowPosition(key) : -1;
   }
 
   private movePointerGrabbed(target: EditTarget, after: boolean): void {
@@ -860,9 +986,7 @@ export class ChannelListEditor {
     if (target.kind === 'channel') ChannelCustomizationService.toggleHidden(target.key);
     else ChannelCustomizationService.toggleGroupHidden(target.key);
     this.applyEdit();
-    if (target.kind === 'channel') {
-      this.refocus = `ch:${PlaylistService.indexOfKey(target.key)}`;
-    }
+    this.refocus = this.refocusKeyFor(target);
     this.options.render();
   }
 
@@ -873,6 +997,8 @@ export class ChannelListEditor {
       return;
     }
     this.renaming = target;
+    this.renameDraft = null;
+    this.refocus = this.refocusKeyFor(target);
     this.options.render();
   }
 
@@ -895,12 +1021,20 @@ export class ChannelListEditor {
     }
 
     const target = this.renaming;
+    if (target && !input) {
+      // Committing without the field would save an empty name; bring the row back.
+      this.refocus = this.refocusKeyFor(target);
+      log.debug('Restored rename row', 'event=channel_edit.rename.restored', `kind=${target.kind}`);
+      this.options.render();
+      return;
+    }
     if (target) {
       if (target.kind === 'group' && this.groupNameExists(target.key, value)) {
         showToast(t('channel.editGroupExists'));
         return;
       }
       this.renaming = null;
+      this.renameDraft = null;
       if (target.kind === 'channel') ChannelCustomizationService.rename(target.key, value);
       else ChannelCustomizationService.renameGroup(target.key, value);
       this.applyEdit();
@@ -1085,13 +1219,15 @@ export class ChannelListEditor {
       this.epgCandidates = candidates;
     } catch (error) {
       if (generation !== this.epgSearchGeneration || key !== this.epgPickerFor) return;
-      log.error(
-        'Worker search failed; using main-thread fallback',
-        'event=search.worker.fallback.used',
-        'scope=mapping',
-        'owner=epg-mapping',
-        error,
-      );
+      if (!isIndexRetryPending(error)) {
+        log.error(
+          'Worker search failed; using main-thread fallback',
+          'event=search.worker.fallback.used',
+          'scope=mapping',
+          'owner=epg-mapping',
+          error,
+        );
+      }
       this.epgCandidates = EpgService.getLocalMappingCandidates(channel, query);
     }
     this.epgSearchPending = false;

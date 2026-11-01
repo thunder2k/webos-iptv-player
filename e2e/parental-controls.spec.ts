@@ -215,6 +215,9 @@ test('channels hidden from the list are locked with their source', async ({ page
     keyCode,
   );
   await expect(page.locator('.channel-main .channel-item')).toHaveCount(2);
+  // Seed the pointer: before its first move, a mouseover can't be told
+  // from content sliding under it, so it is ignored after a key.
+  await page.mouse.move(1, 1);
   await pressKey(405);
   const second = page.locator('.channel-main .channel-item').nth(1);
   await second.hover();
@@ -450,6 +453,59 @@ test('lists live playlists in a column and switches the Xtream account from the 
   await page.keyboard.press('Escape');
   await expect(view.locator('.account-menu')).toHaveCount(0);
   await expect(view).toBeVisible();
+});
+
+test('the account menu opened from the D-pad shows one ring and Back returns it to the avatar', async ({ page }) => {
+  await seedVodAccount(page);
+  await page.addInitScript(() => {
+    const playlists = JSON.parse(localStorage.getItem('iptv_playlists') ?? '[]');
+    playlists.push({ id: 'x2', name: 'Y Account', url: 'http://host.example.com:8080',
+      source: 'xtream', xtream: { username: 'v', password: 'q' } });
+    localStorage.setItem('iptv_playlists', JSON.stringify(playlists));
+  });
+  await page.goto('/');
+  await createPinFromSettings(page);
+  await page.mouse.move(0, 0);
+
+  const view = page.locator('#view-parental-controls');
+  const avatar = view.locator('.account-avatar');
+  await page.keyboard.press('ArrowDown');
+  for (let step = 0; step < 8 && !(await avatar.evaluate(el => el.classList.contains('focused'))); step++) {
+    await page.keyboard.press(step < 4 ? 'ArrowRight' : 'ArrowUp');
+  }
+  await expect(avatar).toHaveClass(/\bfocused\b/);
+
+  await page.keyboard.press('Enter');
+  await expect(view.locator('.account-menu')).toBeVisible();
+  await expect(view.locator('.focused')).toHaveCount(1);
+  await expect(view.locator('.account-menu-item.focused')).toHaveCount(1);
+
+  await page.keyboard.press('Escape');
+  await expect(view.locator('.account-menu')).toHaveCount(0);
+  await expect(avatar).toHaveClass(/\bfocused\b/);
+  await expect(view.locator('.focused')).toHaveCount(1);
+});
+
+test('closing the account menu with a click on the avatar lights the avatar under the pointer', async ({ page }) => {
+  await seedVodAccount(page);
+  await page.addInitScript(() => {
+    const playlists = JSON.parse(localStorage.getItem('iptv_playlists') ?? '[]');
+    playlists.push({ id: 'x2', name: 'Y Account', url: 'http://host.example.com:8080',
+      source: 'xtream', xtream: { username: 'v', password: 'q' } });
+    localStorage.setItem('iptv_playlists', JSON.stringify(playlists));
+  });
+  await page.goto('/');
+  await createPinFromSettings(page);
+
+  const view = page.locator('#view-parental-controls');
+  const avatar = view.locator('.account-avatar');
+  await avatar.click();
+  await expect(view.locator('.account-menu')).toBeVisible();
+  await avatar.click();
+  await expect(view.locator('.account-menu')).toHaveCount(0);
+
+  await expect(avatar).toHaveClass(/\bfocused\b/);
+  await expect(view.locator('.focused')).toHaveCount(1);
 });
 
 test('sets options and removes all locks from the Options tab', async ({ page }) => {
@@ -850,6 +906,39 @@ test('the D-pad resumes from a row that a wheel scroll unmounted', async ({ page
   await expect(focused).toBeInViewport();
 });
 
+test('a focused row scrolled away and back by the wheel still shows its ring', async ({ page }) => {
+  const streams = Array.from({ length: 200 }, (_, index) => ({
+    stream_id: index + 1, name: `Movie ${index}`, stream_icon: '', container_extension: 'mp4', category_id: '1',
+  }));
+  await neuterVideo(page);
+  await routeLiveManifest(page);
+  await routeVodCatalog(page, [{ category_id: '1', category_name: 'Cat A' }], () => streams);
+  await page.goto('/');
+  await createPinFromSettings(page);
+
+  const view = page.locator('#view-parental-controls');
+  await view.locator('#parental-kind [data-value="vod"]').click();
+  await view.locator('[data-parental-group]').filter({ hasText: 'Cat A' }).click();
+  await expect(view.locator('[data-parental-item]').first()).toContainText('Movie 0');
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('ArrowRight');
+  for (let step = 0; step < 5; step++) await page.keyboard.press('ArrowDown');
+  const row = view.locator('[data-parental-item="5"]');
+  await expect(row).toHaveClass(/\bfocused\b/);
+
+  const list = view.locator('[data-parental-list="item"]');
+  await expect(async () => {
+    await list.evaluate(node => { node.scrollTop = 8000; });
+    await expect(row).toHaveCount(0, { timeout: 200 });
+  }).toPass();
+  await list.evaluate(node => { node.scrollTop = 0; });
+
+  await expect(row).toHaveClass(/\bfocused\b/);
+  await expect(view.locator('.focused')).toHaveCount(1);
+  await page.keyboard.press('ArrowDown');
+  await expect(view.locator('[data-parental-item="6"]')).toHaveClass(/\bfocused\b/);
+});
+
 test('a scrolled-away first group still leads Up to Lock suggested', async ({ page }) => {
   const categories = [{ category_id: '1', category_name: 'Adult' }].concat(Array.from(
     { length: 60 }, (_, index) => ({ category_id: String(index + 2), category_name: `Cat ${index + 1}` })));
@@ -864,6 +953,9 @@ test('a scrolled-away first group still leads Up to Lock suggested', async ({ pa
   await view.locator('[data-parental-group="1"]').click();
   // A resting cursor would hover-focus whatever row scrolls under it.
   await page.mouse.move(0, 0);
+  // The pointer left the clicked group, so the first key only shows it.
+  await page.keyboard.press('ArrowUp');
+  await expect(view.locator('[data-parental-group].focused')).toHaveAttribute('data-parental-group', '1');
   await page.keyboard.press('ArrowUp');
   await expect(view.locator('[data-parental-group].focused')).toHaveAttribute('data-parental-group', '0');
 
@@ -1055,16 +1147,6 @@ test('relocking while recent searches are open keeps movies in the next search',
 
 test('a search that opened locked content stays out of recent searches', async ({ page }) => {
   await seedVodAccount(page);
-  // A live channel gives the guide something to fetch, so it settles.
-  await page.route('**/player_api.php*', (route) => {
-    const action = new URL(route.request().url()).searchParams.get('action');
-    if (action === 'get_live_streams') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-        { stream_id: 1, name: 'Channel One', epg_channel_id: 'c1', category_id: '9' },
-      ]) });
-    }
-    return route.fallback();
-  });
   await page.goto('/');
   await createPinFromSettings(page);
   await page.locator('#parental-kind [data-value="vod"]').click();
@@ -1216,4 +1298,134 @@ test('Up in the PIN field does not enter a digit', async ({ page }) => {
   await page.keyboard.press('ArrowUp');
   await expect(input).toHaveValue('');
   await expect(prompt.locator('.parental-pin-slots .filled')).toHaveCount(0);
+});
+
+// Hover a row, then let the pointer leave it: the highlight hides but focus stays.
+async function hoverThenLeave(el: import('@playwright/test').Locator): Promise<void> {
+  await el.evaluate((node) => {
+    node.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    node.dispatchEvent(new CustomEvent('nav:unhover', { bubbles: true }));
+  });
+}
+
+test('a re-render keeps a pointer-hidden highlight hidden until the next key shows it', async ({ page }) => {
+  const streams = Array.from({ length: 200 }, (_, index) => ({
+    stream_id: index + 1, name: `Movie ${index}`, stream_icon: '', container_extension: 'mp4', category_id: '1',
+  }));
+  await neuterVideo(page);
+  await routeLiveManifest(page);
+  await routeVodCatalog(page, [{ category_id: '1', category_name: 'Cat A' }], () => streams);
+  await page.goto('/');
+  await createPinFromSettings(page);
+  const view = page.locator('#view-parental-controls');
+  await view.locator('#parental-kind [data-value="vod"]').click();
+  await view.locator('[data-parental-group]').filter({ hasText: 'Cat A' }).click();
+  const item = (index: number) => view.locator(`[data-parental-item="${String(index)}"]`);
+  await expect(item(2)).toContainText('Movie 2');
+  // Park the real cursor the clicks left over the lists, or it hovers a row.
+  await page.mouse.move(0, 0);
+
+  await hoverThenLeave(item(2));
+  // A small scroll re-renders the virtual list with the row still mounted.
+  await view.locator('[data-parental-list="item"]').evaluate((list) => { list.scrollTop = 20; });
+  await page.waitForTimeout(100);
+  await expect(view.locator('.focused')).toHaveCount(0);
+
+  await page.keyboard.press('ArrowDown');
+  await expect(item(2)).toHaveClass(/\bfocused\b/);
+  await page.keyboard.press('ArrowDown');
+  await expect(item(3)).toHaveClass(/\bfocused\b/);
+});
+
+test('the remove-all prompt owns the remote ring, not the manager behind it', async ({ page }) => {
+  await openManagerWithNewPin(page);
+  await page.locator('[data-parental-tab="options"]').click();
+  await page.locator('[data-parental-remove-all]').click();
+  const confirm = page.locator('.confirmation-prompt');
+  await expect(confirm).toBeVisible();
+
+  await page.keyboard.press('ArrowRight');
+  await expect(confirm.locator('[data-confirm-action="cancel"]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('#view-parental-controls .focused')).toHaveCount(0);
+  await page.keyboard.press('ArrowLeft');
+  await expect(confirm.locator('[data-confirm-action="confirm"]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('#view-parental-controls .focused')).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(confirm).toBeHidden();
+  await expect(page.locator('[data-parental-remove-all]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+});
+
+test('Lock now from the bar resumes Live on a row still shown', async ({ page }) => {
+  await openManagerWithNewPin(page);
+  const view = page.locator('#view-parental-controls');
+  const news = view.locator('[data-parental-group]').filter({ hasText: 'News' });
+  await news.click();
+  await expect(news).toContainText('Locked');
+  await chooseOption(page, 'parental-conceal', 'hide-locked');
+  await chooseOption(page, 'parental-duration', 'until-backgrounded');
+  await page.locator('[data-parental-back]').click();
+
+  await enterTab(page, 'live');
+  const rows = page.locator('#view-channels .channel-main .channel-item');
+  const one = rows.filter({ hasText: 'Channel One' });
+  await expect(one).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  await expect(rows.first()).toHaveClass(/\bfocused\b/);
+  await expect(rows.first()).toHaveText(/Channel One/);
+
+  // Up onto the bar, Left onto Lock now, and lock with OK.
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowLeft');
+  const lockNow = page.locator('.tab-bar [data-lock-now]');
+  await expect(lockNow).toHaveClass(/\bfocused\b/);
+  await page.keyboard.press('Enter');
+  await expect(lockNow).toHaveCount(0);
+  await expect(one).toHaveCount(0);
+
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator('.tab-bar .focused')).toHaveCount(0);
+  await expect(page.locator('#view-channels .focused')).toHaveCount(1);
+  await expect(page.locator('#view-channels .focused')).toBeInViewport();
+});
+
+test('the pointer on the account menu keeps one ring, and Back returns to the avatar', async ({ page }) => {
+  await seedVodAccount(page);
+  await page.addInitScript(() => {
+    const playlists = JSON.parse(localStorage.getItem('iptv_playlists') ?? '[]');
+    playlists.push({ id: 'x2', name: 'Y Account', url: 'http://host.example.com:8080',
+      source: 'xtream', xtream: { username: 'v', password: 'q' } });
+    localStorage.setItem('iptv_playlists', JSON.stringify(playlists));
+  });
+  await page.goto('/');
+  await createPinFromSettings(page);
+  const view = page.locator('#view-parental-controls');
+  const playlist = view.locator('.parental-column-source [data-parental-source]').first();
+  await expect(playlist).toBeVisible();
+  const hover = async (target: typeof playlist) => {
+    const box = (await target.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  };
+
+  await view.locator('.account-avatar').click();
+  await expect(view.locator('.account-menu')).toBeVisible();
+  // The pointer crosses the list on its way back to the menu, which keeps
+  // the hover outside it dark.
+  await hover(playlist);
+  await expect(playlist).not.toHaveClass(/\bfocused\b/);
+  const bravo = view.locator('.account-menu-item[data-account-id="x2"]');
+  await hover(bravo);
+  await expect(bravo).toHaveClass(/\bfocused\b/);
+  await expect(playlist).not.toHaveClass(/\bfocused\b/);
+  await page.keyboard.press('ArrowUp');
+  await expect(view.locator('.account-menu-item[data-account-id="x1"]')).toHaveClass(/\bfocused\b/);
+  await expect(view.locator('.focused:not(.parental-account-slot)')).toHaveCount(1);
+
+  await page.keyboard.press('Escape');
+  await expect(view.locator('.account-menu')).toHaveCount(0);
+  await expect(view).toBeVisible();
+  await expect(view.locator('.account-avatar')).toHaveClass(/\bfocused\b/);
+  await expect(view.locator('.focused:not(.parental-account-slot)')).toHaveCount(1);
 });

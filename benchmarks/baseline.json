@@ -409,7 +409,29 @@
           }
         },
         "renderedPrograms": 16,
-        "programTotalSize": "21_800px"
+        "programTotalSize": "21_800px",
+        "indexBuild": {
+          "openMs": 8.7,
+          "readyMs": 969.2,
+          "maxFrameGapMs": 133.3,
+          "frames": 46,
+          "longTaskCount": 4,
+          "longTaskTotalMs": 280,
+          "longTaskMaxMs": 81,
+          "postMs": 0.6,
+          "posts": 4
+        },
+        "indexBuildWarm": {
+          "openMs": 10.1,
+          "readyMs": 95.4,
+          "maxFrameGapMs": 16.7,
+          "frames": 8,
+          "longTaskCount": 0,
+          "longTaskTotalMs": 0,
+          "longTaskMaxMs": 0,
+          "postMs": 0,
+          "posts": 4
+        }
       },
       "m3u": {
         "initialOpenMs": 9.5,
@@ -457,7 +479,29 @@
           "channels": 1,
           "programs": 1
         },
-        "renderedCatalogSections": 0
+        "renderedCatalogSections": 0,
+        "indexBuild": {
+          "openMs": 9,
+          "readyMs": 723.3,
+          "maxFrameGapMs": 100,
+          "frames": 40,
+          "longTaskCount": 1,
+          "longTaskTotalMs": 106,
+          "longTaskMaxMs": 106,
+          "postMs": 0.8,
+          "posts": 3
+        },
+        "indexBuildWarm": {
+          "openMs": 5.7,
+          "readyMs": 76.3,
+          "maxFrameGapMs": 16.7,
+          "frames": 7,
+          "longTaskCount": 0,
+          "longTaskTotalMs": 0,
+          "longTaskMaxMs": 0,
+          "postMs": 0.2,
+          "posts": 3
+        }
       }
     },
     "interactions": {

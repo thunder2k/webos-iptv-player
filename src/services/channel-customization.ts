@@ -220,9 +220,11 @@ class ChannelCustomizationServiceImpl {
    * Apply the customization to parsed channels, returning the visible list in
    * effective order. Mutates each channel's display fields in place and keeps
    * the source values on `sourceName` / `sourceGroup`, so repeated calls are
-   * idempotent and clearing an override restores the source value.
+   * idempotent and clearing an override restores the source value. When given,
+   * `sourceIndices` (at least `channels.length` long) receives each returned
+   * channel's index in `channels`.
    */
-  applyTo(channels: Channel[], includeHidden = false): Channel[] {
+  applyTo(channels: Channel[], includeHidden = false, sourceIndices?: Uint32Array): Channel[] {
     const d = this.record;
     const rank = new Map<string, number>();
     for (let i = 0; i < d.order.length; i++) rank.set(d.order[i], i);
@@ -251,7 +253,11 @@ class ChannelCustomizationServiceImpl {
 
     // Legacy Chromium sort is not stable — the index tiebreak keeps it deterministic.
     kept.sort((a, b) => a.rank - b.rank || a.index - b.index);
-    return kept.map((entry) => entry.ch);
+    if (!sourceIndices) return kept.map((entry) => entry.ch);
+    return kept.map((entry, i) => {
+      sourceIndices[i] = entry.index;
+      return entry.ch;
+    });
   }
 
   /** Sort group keys into the effective group order. */

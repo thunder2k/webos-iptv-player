@@ -50,6 +50,8 @@ vi.mock('../services/subtitle-search/subtitle-search-service', () => ({
 }));
 
 import { Player } from './player';
+import { Focus } from '../navigation/focus-scope';
+import { setCursorHidden, setInputMode } from '../navigation/input-mode';
 import {
   containerMime,
   diagnosticStreamUrl,
@@ -65,6 +67,9 @@ import { probeMedia } from '../services/media-probe';
 import { CONFIG } from '../config';
 import { channelKey, legacyChannelKey } from '../utils/channel';
 import { ParentalControlService } from '../services/parental-control';
+import { VodSubtitles } from '../services/vod-subtitles';
+import { HlsSubtitles } from '../services/hls-subtitles';
+import { DashSubtitles } from '../services/dash-subtitles';
 
 const CHANNEL = {
   id: 'c1', name: 'Chan', logo: '', group: '', url: 'http://host/play/c1', extras: null,
@@ -134,6 +139,19 @@ function fakeVideo(duration: number): HTMLVideoElement {
     dispatchEvent(e: Event) { (listeners[e.type] || []).forEach((fn) => fn()); return true; },
   } as unknown as HTMLVideoElement;
 }
+
+// An AudioTrackList/TextTrackList stand-in whose add() fires `addtrack`.
+function trackList<T>(items: T[]) {
+  const listeners: Array<(e: { track: T }) => void> = [];
+  const list = Object.assign(items.slice(), {
+    addEventListener(_type: string, fn: (e: { track: T }) => void) { listeners.push(fn); },
+    add(track: T) { list.push(track); listeners.forEach(fn => fn({ track })); },
+  });
+  return list;
+}
+
+const vodTrackEvents = (log: { mock: { calls: unknown[][] } }) => log.mock.calls
+  .map(args => args.join(' ')).filter(text => text.includes('event=vod.tracks'));
 
 function fakeAsyncSeekVideo(duration: number) {
   let currentTime = 0;
@@ -247,11 +265,16 @@ beforeEach(() => {
   player.init(video);
 });
 afterEach(() => {
+  Focus.uninstall();
+  setInputMode('pointer');
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 const bar = () => container.querySelector('.osd-progress-bar') as HTMLElement;
+// The remote's keys drive the player, as KeyHandler records a key press that
+// follows another key.
+const remoteKeys = () => { setInputMode('keys'); setInputMode('keys'); };
 const elapsed = () => container.querySelector('.osd-time-current')!.textContent;
 
 describe('Player authorization gates', () => {
@@ -429,6 +452,19 @@ describe('Player catch-up seeking', () => {
     expect(video.paused).toBe(true); // paused (cursor cleared), not seeked to the stale pointer
   });
 
+  it('Back drops a stale cursor, so OK resumes rather than seeking to it', () => {
+    stubBar();
+    player.handleAction('pause');
+    container.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 250, clientY: 18 }));
+    remoteKeys();
+    expect(player.hideOsdForBack()).toBe(true);
+    player.handleAction('select'); // shows the OSD
+    expect(player.canSeek()).toBe(true);
+    player.handleAction('select');
+    expect(video.paused).toBe(false); // resumed
+    expect(video.currentTime).toBe(0); // not seeked to the stale cursor
+  });
+
   it('is no longer seekable once the OSD hides', () => {
     player.hideOSD();
     expect(player.canSeek()).toBe(false);
@@ -459,6 +495,38 @@ describe('Player catch-up pause/play', () => {
     expect(video.paused).toBe(true);
     player.handleAction('play');
     expect(video.paused).toBe(false);
+  });
+
+  it('lets Back hide the OSD only while paused', () => {
+    remoteKeys();
+    expect(player.hideOsdForBack()).toBe(false); // playing: Back stops
+    player.handleAction('select'); // pauses
+    expect(video.paused).toBe(true);
+    expect(player.hideOsdForBack()).toBe(true);
+    expect(video.paused).toBe(true);
+    expect(player.canSeek()).toBe(false); // Right opens the menu
+    vi.advanceTimersByTime(60_000);
+    expect(container.querySelector('#player-osd')!.classList.contains('hidden')).toBe(true);
+  });
+
+  it('lets Back stop once the pipeline resumed a user pause, even if it paused again', () => {
+    remoteKeys();
+    player.handleAction('pause');
+    video.play();
+    video.dispatchEvent(new Event('play'));
+    video.pause();
+    video.dispatchEvent(new Event('pause'));
+    expect(container.querySelector('#player-osd')!.classList.contains('hidden')).toBe(false);
+    expect(player.hideOsdForBack()).toBe(false);
+  });
+
+  it('keeps a user re-pause when the resume\'s `play` event arrives after it', () => {
+    remoteKeys();
+    player.handleAction('pause');
+    player.handleAction('play');
+    player.handleAction('pause');
+    video.dispatchEvent(new Event('play'));
+    expect(player.hideOsdForBack()).toBe(true);
   });
 
   // The control is driven from click by coordinates — mirror the live DVR
@@ -639,6 +707,13 @@ describe('Player catch-up completion', () => {
 });
 
 describe('Player live playback', () => {
+  it('lets Back stop playing live with the OSD up', () => {
+    player.play(0);
+    remoteKeys();
+    expect(container.querySelector('#player-osd')!.classList.contains('hidden')).toBe(false);
+    expect(player.hideOsdForBack()).toBe(false);
+  });
+
   it('has no seek bar and is not seekable', () => {
     player.play(0); // live, no catch-up
     expect(player.canSeek()).toBe(false);
@@ -992,6 +1067,18 @@ describe('Player live DVR', () => {
     expect(live.paused).toBe(true);
   });
 
+  it('keeps a paused OSD current after Back hid it and OK showed it again', () => {
+    remoteKeys();
+    player.handleAction('pause');
+    expect(player.hideOsdForBack()).toBe(true);
+    vi.advanceTimersByTime(1000);
+    player.handleAction('select'); // hidden OSD: OK shows it, still paused
+    expect(live.paused).toBe(true);
+    setWindow(0, 120); // the live edge moves on while paused
+    vi.advanceTimersByTime(1000);
+    expect((container.querySelector('.osd-progress-bar') as HTMLElement).style.width).toBe('50%');
+  });
+
   it('holds the paused point until resume, then clamps into the rolled window', () => {
     player.handleAction('rewind');
     player.handleAction('pause');
@@ -1105,6 +1192,47 @@ describe('Player stall reconnect OSD', () => {
     container.querySelector('video')!.dispatchEvent(new Event('loadedmetadata'));
     expect(osd.textContent).not.toContain('Reconnecting');
   });
+
+  it('lets Back stop at once over a Reconnecting… message and while the reload starts', async () => {
+    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.pause = vi.fn();
+    HTMLMediaElement.prototype.load = vi.fn();
+    const v = document.createElement('video');
+    container.appendChild(v);
+    player.init(v);
+    player.play(0); // live
+    await flush();
+    (player as unknown as { reloadCurrentStream(): void }).reloadCurrentStream();
+    await flush();
+    remoteKeys();
+    expect(v.paused).toBe(true); // the mocked play() never starts it
+    expect(player.hideOsdForBack()).toBe(false);
+    container.querySelector('video')!.dispatchEvent(new Event('loadedmetadata'));
+    expect(container.querySelector('#player-osd')!.classList.contains('hidden')).toBe(false);
+    expect(player.hideOsdForBack()).toBe(false); // recovered metadata, not yet playing
+  });
+
+  it('lets Back stop a stream still starting with the OSD up', async () => {
+    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.pause = vi.fn();
+    HTMLMediaElement.prototype.load = vi.fn();
+    const v = document.createElement('video');
+    container.appendChild(v);
+    player.init(v);
+    player.play(0); // live
+    await flush();
+    remoteKeys();
+    expect(v.paused).toBe(true); // the mocked play() never starts it
+    expect(container.querySelector('#player-osd')!.classList.contains('hidden')).toBe(false);
+    expect(player.hideOsdForBack()).toBe(false);
+    player.playVod({
+      url: 'http://host/a.mp4', title: 'Movie One', poster: '', accountId: 'x1', itemId: '10',
+      kind: 'vod', resumeSecs: 0, subtitles: [], onBack: vi.fn(),
+    });
+    await flush();
+    expect(container.querySelector('video')!.paused).toBe(true);
+    expect(player.hideOsdForBack()).toBe(false);
+  });
 });
 
 describe('Player VOD mode', () => {
@@ -1122,7 +1250,7 @@ describe('Player VOD mode', () => {
     document.body.appendChild(container);
     player = new Player(container, () => {});
   });
-  afterEach(() => { container.remove(); });
+  afterEach(() => { container.remove(); vi.restoreAllMocks(); });
 
   it('defers VOD playback until the authorizer runs the action', () => {
     let deferred: (() => void) | null = null;
@@ -1204,11 +1332,173 @@ describe('Player VOD mode', () => {
     expect(player.isVod()).toBe(true);
   });
 
+  it('logs the native track counts once metadata is known', () => {
+    const counted = fakeVideo(3600);
+    const audio = (enabled: boolean) => ({ enabled, label: '', language: '', id: '', kind: 'main' });
+    const sidecar = { kind: 'subtitles', label: '', language: '', mode: 'hidden' };
+    Object.defineProperty(counted, 'audioTracks', { value: [audio(true), audio(false)] });
+    Object.defineProperty(counted, 'textTracks', {
+      value: [{ kind: 'subtitles', label: '', language: '', mode: 'disabled' }, sidecar],
+    });
+    vi.spyOn(VodSubtitles.prototype, 'owns').mockImplementation((track) => track === sidecar as unknown);
+    const bare = fakeVideo(3600);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    player.init(counted);
+    player.playVod(req());
+    counted.dispatchEvent(new Event('loadedmetadata'));
+    player.init(bare);
+    player.playVod(req());
+    bare.dispatchEvent(new Event('loadedmetadata'));
+
+    expect(vodTrackEvents(log)).toEqual([
+      expect.stringContaining('event=vod.tracks audio=2 text=1 mse=0'),
+      expect.stringContaining('event=vod.tracks audio=none text=0 mse=0'),
+    ]);
+  });
+
+  it('flags MSE playback in the track counts', () => {
+    const video = fakeVideo(3600);
+    vi.spyOn((player as unknown as { pipeline: { isMseActive(): boolean } }).pipeline, 'isMseActive')
+      .mockReturnValue(true);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    player.init(video);
+    player.playVod(req());
+    video.dispatchEvent(new Event('loadedmetadata'));
+
+    expect(vodTrackEvents(log)).toEqual([expect.stringContaining('mse=1')]);
+  });
+
+  it('logs the first native track added after metadata once per load', () => {
+    const video = fakeVideo(3600);
+    const audio = () => ({ enabled: false, label: '', language: '', id: '', kind: 'main' });
+    const text = () => ({ kind: 'subtitles', label: '', language: '', mode: 'disabled' });
+    const audioTracks = trackList([audio()]);
+    const textTracks = trackList<unknown>([]);
+    Object.defineProperty(video, 'audioTracks', { value: audioTracks });
+    Object.defineProperty(video, 'textTracks', { value: textTracks });
+    const sidecar = text();
+    vi.spyOn(VodSubtitles.prototype, 'owns').mockImplementation((track) => track === sidecar as unknown);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    player.init(video);
+    player.playVod(req());
+    audioTracks.add(audio()); // before metadata: covered by the loadedmetadata event
+    video.dispatchEvent(new Event('loadedmetadata'));
+    textTracks.add(sidecar); // the app's own sidecar track is not a late arrival
+    textTracks.add(text());
+    audioTracks.add(audio());
+    video.dispatchEvent(new Event('loadstart'));
+    video.dispatchEvent(new Event('loadedmetadata'));
+    video.dispatchEvent(new Event('loadstart')); // a new load disarms the last one's late event
+    textTracks.add(text());
+    video.dispatchEvent(new Event('loadedmetadata'));
+    audioTracks.add(audio());
+
+    expect(vodTrackEvents(log)).toEqual([
+      expect.stringContaining('event=vod.tracks audio=2 text=0 mse=0'),
+      expect.stringContaining('event=vod.tracks phase=late audio=2 text=1 mse=0'),
+      expect.stringContaining('event=vod.tracks audio=3 text=1 mse=0'),
+      expect.stringContaining('event=vod.tracks audio=3 text=2 mse=0'),
+      expect.stringContaining('event=vod.tracks phase=late audio=4 text=2 mse=0'),
+    ]);
+  });
+
+  it('leaves the HLS and DASH renderer tracks out of the track counts', () => {
+    const video = fakeVideo(3600);
+    const text = () => ({ kind: 'subtitles', label: '', language: '', mode: 'disabled' });
+    const textTracks = trackList<unknown>([]);
+    Object.defineProperty(video, 'audioTracks', { value: trackList([]) });
+    Object.defineProperty(video, 'textTracks', { value: textTracks });
+    const hlsTrack = text();
+    const dashTrack = text();
+    vi.spyOn(HlsSubtitles.prototype, 'owns').mockImplementation((track) => track === hlsTrack as unknown);
+    vi.spyOn(DashSubtitles.prototype, 'owns').mockImplementation((track) => track === dashTrack as unknown);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    player.init(video);
+    player.playVod(req());
+    textTracks.add(hlsTrack);
+    video.dispatchEvent(new Event('loadedmetadata'));
+    textTracks.add(dashTrack); // a FORCED or saved subtitle the app renders itself
+    textTracks.add(text());
+
+    expect(vodTrackEvents(log)).toEqual([
+      expect.stringContaining('event=vod.tracks audio=0 text=0 mse=0'),
+      expect.stringContaining('event=vod.tracks phase=late audio=0 text=1 mse=0'),
+    ]);
+  });
+
+  it('lets Right open the menu only over bare video', () => {
+    const video = fakeVideo(3600);
+    player.init(video);
+    player.playVod(req());
+    const internals = player as unknown as {
+      osd: { hide(): void };
+      tracks: { subsOverlay: { visible: boolean } | null };
+    };
+    expect(player.vodRightOpensMenu()).toBe(false); // the OSD shows
+    internals.osd.hide();
+    expect(player.vodRightOpensMenu()).toBe(true);
+    internals.tracks.subsOverlay = { visible: true };
+    expect(player.vodRightOpensMenu()).toBe(false);
+  });
+
+  it('lets Right open the menu over the OSD until the duration is usable', () => {
+    const video = fakeVideo(NaN);
+    player.init(video);
+    player.playVod(req()); // the OSD shows before loadedmetadata
+    expect(player.vodRightOpensMenu()).toBe(true);
+    (video as { duration: number }).duration = Infinity;
+    expect(player.vodRightOpensMenu()).toBe(true);
+    (video as { duration: number }).duration = 3600;
+    expect(player.vodRightOpensMenu()).toBe(false);
+  });
+
   it('is seekable while the OSD is up (finite duration)', () => {
     const video = fakeVideo(3600);
     player.init(video);
     player.playVod(req());
     expect(player.canSeek()).toBe(true); // playVod shows the OSD
+  });
+
+  it('lets Back hide the OSD unless the subtitle search or up-next owns it', () => {
+    const video = fakeVideo(3600);
+    player.init(video);
+    player.playVod(req());
+    remoteKeys();
+    expect(player.hideOsdForBack()).toBe(false); // playing: Back stops
+    player.handleAction('select'); // pause
+    expect(player.vodRightOpensMenu()).toBe(false);
+    const internals = player as unknown as {
+      tracks: { subsOverlay: { visible: boolean } | null };
+      upNextTimer: ReturnType<typeof setInterval> | null;
+    };
+    internals.tracks.subsOverlay = { visible: true };
+    expect(player.hideOsdForBack()).toBe(false);
+    internals.tracks.subsOverlay = null;
+    internals.upNextTimer = 1 as unknown as ReturnType<typeof setInterval>;
+    expect(player.hideOsdForBack()).toBe(false);
+    internals.upNextTimer = null;
+    expect(player.hideOsdForBack()).toBe(true);
+    expect(video.paused).toBe(true);
+    expect(player.vodRightOpensMenu()).toBe(true);
+  });
+
+  // A cursor on screen re-reveals the OSD, so hiding it would trap Back.
+  it('lets Back stop a paused VOD when the pointer drove it last, unless webOS hid the cursor', () => {
+    const video = fakeVideo(3600);
+    player.init(video);
+    player.playVod(req());
+    player.handleAction('select'); // pause
+    setInputMode('pointer');
+    setInputMode('keys'); // Back is the first key after the pointer
+    expect(player.hideOsdForBack()).toBe(false);
+    setInputMode('pointer');
+    setCursorHidden(true);
+    setInputMode('keys');
+    expect(player.hideOsdForBack()).toBe(true);
   });
 
   it('offers and applies playback speed for VOD in the desktop preview', async () => {
@@ -1349,6 +1639,26 @@ describe('Player VOD mode', () => {
     expect(StorageService.clearResume).toHaveBeenCalledWith('x1', 'vod', '10');
     expect(StorageService.removeWatchlist).toHaveBeenCalledWith('x1', 'vod', '10');
     expect(r.onBack).toHaveBeenCalled();
+  });
+
+  it('keeps Right from opening the menu during the up-next countdown', () => {
+    HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.pause = vi.fn();
+    HTMLMediaElement.prototype.load = vi.fn();
+    const video = document.createElement('video');
+    Object.defineProperty(video, 'duration', { value: 1800, configurable: true });
+    container.appendChild(video);
+    player.init(video);
+    player.playVod(req({ watchlistQueue: [{
+      url: 'http://host:8080/movie/u/p/11.mp4', title: 'Movie Two',
+      poster: '', accountId: 'x1', itemId: '11', kind: 'vod' as const, subtitles: [],
+    }] }));
+
+    video.dispatchEvent(new Event('ended'));
+    expect(container.textContent).toContain('Starts in 10 seconds');
+    (player as unknown as { osd: { hide(): void } }).osd.hide();
+    expect(player.vodRightOpensMenu()).toBe(false);
+    player.stop();
   });
 
   it('counts down and starts the next movie from a Watchlist queue', async () => {
@@ -2061,10 +2371,14 @@ describe('Player subtitle-offset overlay', () => {
     p.init(fakeVideo(0));
     (p as unknown as { currentChannel: unknown }).currentChannel = { ...CHANNEL };
     p.openSubtitleOffset();
-    expect(p.subtitleOffsetOpen()).toBe(true);
-    p.handleSubtitleOffsetAction('right');
-    p.handleSubtitleOffsetAction('back');
-    expect(p.subtitleOffsetOpen()).toBe(false);
+    const offset = document.getElementById('subtitle-offset')!;
+    expect(offset.classList.contains('hidden')).toBe(false);
+    // The overlay owns its keys while open, ahead of the player view.
+    expect(Focus.owner()?.id).toBe('player.subtitle_offset');
+    expect(Focus.owner()?.handle('right')).toBe(true);
+    expect(Focus.owner()?.handle('back')).toBe(true);
+    expect(offset.classList.contains('hidden')).toBe(true);
+    expect(Focus.owner()).toBeNull();
   });
 });
 

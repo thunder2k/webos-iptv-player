@@ -1,5 +1,6 @@
 import type { Action, Reminder } from '../types';
 import { SpatialNav } from '../navigation/spatial-nav';
+import { Focus, type FocusScope } from '../navigation/focus-scope';
 import { ReminderService } from '../services/reminder-service';
 import { html, raw } from '../utils/dom';
 import { morph } from '../utils/morph';
@@ -23,31 +24,41 @@ interface ReminderDayGroup {
 
 export class ReminderManager {
   private nav: SpatialNav;
-  private confirmationPrompt = new ConfirmationPrompt();
+  readonly focusScope: FocusScope;
+  private confirmationPrompt = new ConfirmationPrompt('prompt.reminder_manager');
   private now = Date.now();
 
   constructor(
     private container: HTMLElement,
     private onBack: () => void,
   ) {
-    this.nav = new SpatialNav(container);
+    this.focusScope = Focus.register({
+      id: 'view.reminders',
+      root: container,
+      leaveFor: { up: 'tabbar' },
+      defaultKey: () => {
+        const el = this.nav.focused;
+        return el && this.container.contains(el) ? el.dataset.key ?? null : null;
+      },
+    });
+    this.nav = new SpatialNav(container, undefined, { scope: this.focusScope });
     this.container.setAttribute('data-self-activate', '');
     this.container.addEventListener('click', (event: MouseEvent) => {
       const control = (event.target as HTMLElement).closest<HTMLElement>('[data-focusable]');
       if (!control) return;
-      this.nav.focus(control);
+      this.nav.focus(control, 'pointer');
       this.activate(control);
     });
-  }
-
-  get isPromptVisible(): boolean {
-    return this.confirmationPrompt.visible;
   }
 
   open(now = Date.now()): void {
     this.now = now;
     this.render();
     this.focusFirst();
+  }
+
+  dismissPrompt(): void {
+    this.confirmationPrompt.hide();
   }
 
   handleAction(action: Action): void {
@@ -75,13 +86,13 @@ export class ReminderManager {
       <div class="reminder-manager-view">
         <header class="reminder-manager-hero">
           <div class="reminder-manager-actions">
-            <button class="reminder-manager-back" data-focusable
+            <button class="reminder-manager-back" data-focusable data-key="back"
                     data-reminder-action="back">
               <span class="reminder-manager-button-icon">${raw(BACK_ICON)}</span>
               <span>${t('common.back')}</span>
             </button>
             ${reminders.length
-              ? html`<button class="reminder-manager-clear" data-focusable
+              ? html`<button class="reminder-manager-clear" data-focusable data-key="clear"
                              data-reminder-action="clear">
                        <span class="reminder-manager-button-icon">${raw(TRASH_ICON)}</span>
                        <span>${t('reminderManager.clearAll')}</span>
@@ -168,6 +179,7 @@ export class ReminderManager {
           <div class="reminder-manager-channel">${reminder.channelName}</div>
         </div>
         <button class="reminder-manager-remove" data-focusable
+                data-key="remove:${reminder.channelKey}|${reminder.startMs}"
                 data-reminder-action="remove" data-channel-key="${reminder.channelKey}"
                 data-start-ms="${reminder.startMs}">
           <span class="reminder-manager-button-icon">${raw(REMOVE_ICON)}</span>

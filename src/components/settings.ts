@@ -1,7 +1,8 @@
 import type { Action, ChannelCycleMode, EpgSource, ManualEpgSource, NavDirection, PlaylistEntry, TzMode, XtreamLiveCategoryFilter, XtreamLiveCategorySnapshot } from '../types';
 import { $, $$, html, raw, type Safe } from '../utils/dom';
 import { morph } from '../utils/morph';
-import { SpatialNav } from '../navigation/spatial-nav';
+import { SpatialNav, isFocusMove } from '../navigation/spatial-nav';
+import { Focus, type FocusScope, type Via } from '../navigation/focus-scope';
 import {
   NUMBER_ENTRY_OSD_TIMEOUT_MS_OPTIONS,
   LIVE_RECONNECT_ATTEMPT_OPTIONS,
@@ -46,7 +47,7 @@ import {
 } from './dropdown';
 import qrcode from 'qrcode-generator';
 import { createLogger } from '../utils/logger';
-import { ParentalControlService } from '../services/parental-control';
+import { ParentalControlService, isResumeConcealed, isWatchlistConcealed } from '../services/parental-control';
 import { parentalPinSupported } from '../services/parental-pin';
 import {
   formatNumber,
@@ -78,6 +79,10 @@ import {
 } from './icons';
 
 const log = createLogger('Settings');
+// Frames the pane must hold still before a scroll counts as done.
+const CATEGORY_SCROLL_STABLE_FRAMES = 4;
+const CATEGORY_SCROLL_IDLE_FRAMES = 8;
+const CATEGORY_SCROLL_MAX_FRAMES = 120;
 
 type EpgScopePlaylist = Pick<PlaylistEntry, 'id' | 'name' | 'url'>;
 
@@ -411,45 +416,52 @@ function manualEpgSourceRow(
 ): Safe {
   const canMoveEarlier = index > 0;
   const canMoveLater = index < sourceCount - 1;
+  const key = manualEpgKey(index);
   return html`
-    <div class="manual-epg-source" data-manual-epg-source data-key="manual-epg-${index}">
+    <div class="manual-epg-source" data-manual-epg-source data-key="${key}">
       <div class="manual-epg-source-head">
         <span class="manual-epg-priority">${index + 1}</span>
         <input type="url" class="settings-input manual-epg-url" data-focusable
                aria-label="${t('settings.xmltvUrl')}" value="${source.url}"
                placeholder="http://host/guide.xml">
-        <button class="btn btn-secondary move-epg-earlier"
+        <button class="btn btn-secondary move-epg-earlier" data-key="${key}:earlier"
                 ${raw(canMoveEarlier ? 'data-focusable' : 'disabled')}
                 aria-label="${t('settings.moveEarlier')}">${raw(CHEVRON_UP)}</button>
-        <button class="btn btn-secondary move-epg-later"
+        <button class="btn btn-secondary move-epg-later" data-key="${key}:later"
                 ${raw(canMoveLater ? 'data-focusable' : 'disabled')}
                 aria-label="${t('settings.moveLater')}">${raw(CHEVRON_DOWN)}</button>
-        <button class="btn btn-danger remove-epg-source" data-focusable>
+        <button class="btn btn-danger remove-epg-source" data-focusable data-key="${key}:remove">
           ${t('common.remove')}
         </button>
       </div>
       <div class="manual-epg-scope">
         <span class="manual-epg-scope-label">${t('settings.epgAppliesTo')}</span>
-        ${manualEpgScopeOptions(source, playlists)}
+        ${manualEpgScopeOptions(source, playlists, key)}
       </div>
     </div>`;
+}
+
+function manualEpgKey(index: number): string {
+  return `manual-epg-${index}`;
 }
 
 function manualEpgScopeOptions(
   source: ManualEpgSource,
   playlists: EpgScopePlaylist[],
+  rowKey: string,
 ): Safe {
   const allPlaylists = source.playlistIds.length === 0;
   return html`
     <div class="manual-epg-scope-options">
       <button class="epg-scope-option ${allPlaylists ? 'active' : ''}"
-              data-focusable data-scope-all>
+              data-focusable data-scope-all data-key="${rowKey}:all">
         ${t('settings.allPlaylists')}
       </button>
       ${playlists.map(playlist => html`
         <button class="epg-scope-option ${
           source.playlistIds.includes(playlist.id) ? 'active' : ''
-        }" data-focusable data-playlist-id="${playlist.id}">
+        }" data-focusable data-playlist-id="${playlist.id}"
+                data-key="${rowKey}:playlist:${playlist.id}">
           ${playlist.name || playlist.url}
         </button>
       `)}
@@ -476,11 +488,25 @@ export class Settings {
   private onSave: (action: SaveAction) => void | Promise<void>;
   private onChannelsChanged: () => void;
   private nav: SpatialNav;
+  // The nav only picks elements geometrically; the scope holds the focused
+  // control's key and owns its ring and its reveal.
+  readonly focusScope: FocusScope;
+  // How the nav's next pick was asked for.
+  private via: Via = 'key';
+  // The pointer left the focused control: the next key only shows it.
+  private concealed = false;
+  // A control hovered while a text field has the caret, which takes the
+  // ring once the caret leaves.
+  private notedKey: string | null = null;
+  // The control Settings came back to, until its first reveal.
+  private landedKey: string | null = null;
+  private currentRow: Element | null = null;
   // Pending theme selection (persisted on Save; live-previewed while browsing).
   private selectedTheme = '';
+  private themeHoverToken = 0;
   private epgOffsets: Record<string, number> = {};
   private storedEpgOffsets: Record<string, number> = {};
-  private confirmationPrompt = new ConfirmationPrompt();
+  private confirmationPrompt = new ConfirmationPrompt('prompt.settings');
   private liveCategoryPicker = new LiveCategoryPicker();
   // Picker results waiting for Save, per card id; `account` ties each to the
   // server and username it was chosen for.
@@ -495,6 +521,8 @@ export class Settings {
   private categoryScrollFrame: number | null = null;
   private categorySyncFrame: number | null = null;
   private categoryFocusFrame: number | null = null;
+  // The scroll hold keeps the focused control's category, not the pane's.
+  private categoryAimed = false;
   private onManageReminders: () => void;
   private onManageParentalControls: () => void;
   private healthController: AbortController | null = null;
@@ -520,7 +548,22 @@ export class Settings {
     this.onChannelsChanged = onChannelsChanged;
     this.onManageReminders = onManageReminders;
     this.onManageParentalControls = onManageParentalControls;
-    this.nav = new SpatialNav(container, (el) => this.onNavFocus(el));
+    this.nav = new SpatialNav(container, (el) => this.onNavFocus(el), { follow: false });
+    this.focusScope = Focus.register({
+      id: 'view.settings',
+      root: container,
+      leaveFor: { up: 'tabbar' },
+      defaultKey: () => this.defaultKey(),
+      resolve: (key) => this.resolveKey(key),
+      reveal: (key) => this.revealLanded(key),
+      // A caret left in a text field keeps the arrow keys from whatever owns
+      // them. The control the pointer rests on is no longer picked as it goes:
+      // Settings no longer owns the keys, and a swatch would preview its theme.
+      onRelease: () => {
+        this.notedKey = null;
+        this.caretInput()?.blur();
+      },
+    });
 
     // Mouse/pointer support: clicking a focusable element behaves like remote OK.
     // Attached once on the persistent container (render() replaces innerHTML).
@@ -535,21 +578,47 @@ export class Settings {
       }
       const el = target.closest<HTMLElement>('[data-focusable]');
       if (!el) return;
-      this.nav.focus(el);
+      this.notedKey = null;
+      this.pick(el, 'pointer');
       this.activate(el);
     });
 
-    // Enter on input: commit and move to next focusable element in DOM order.
+    // The global key handler ignores most keys in a text field, so the field
+    // owns its ways out. Each sets where the ring lands before the caret goes.
     // Attached once on the persistent container (render() replaces innerHTML).
     this.container.addEventListener('keydown', (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && (e.target as HTMLElement).tagName === 'INPUT') {
-        e.preventDefault();
-        (e.target as HTMLInputElement).blur();
+      const input = e.target as HTMLInputElement;
+      if (input.tagName !== 'INPUT') return;
+      const back = e.key === 'Escape' || e.keyCode === CONFIG.KEYS.BACK;
+      const up = e.key === 'ArrowUp' || e.keyCode === CONFIG.KEYS.UP;
+      const down = e.key === 'ArrowDown' || e.keyCode === CONFIG.KEYS.DOWN;
+      if (e.key !== 'Enter' && !up && !down && !back) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.notedKey = null;
+      this.via = 'key';
+      if (e.key === 'Enter') {
+        // Commit and move to the next focusable element in DOM order.
         const all = Array.from(this.container.querySelectorAll<HTMLElement>('[data-focusable]'));
-        const idx = all.indexOf(e.target as HTMLElement);
-        const next = all[idx + 1];
-        if (next) this.nav.focus(next);
+        this.pick(all[all.indexOf(input) + 1] ?? input, 'key');
+      } else if (back) {
+        this.pick(input, 'key');
+      } else {
+        this.nav.focused = input;
+        if (!this.moveFocus(up ? 'up' : 'down')) this.pick(input, 'key');
       }
+      input.blur();
+    });
+
+    // However the pointer took the caret away, the ring lands on the control
+    // it rests on, or stays on the field.
+    this.container.addEventListener('focusout', (e: FocusEvent) => {
+      const input = e.target as HTMLElement;
+      if (input.tagName !== 'INPUT') return;
+      const noted = this.notedKey;
+      this.notedKey = null;
+      const el = noted !== null ? this.resolveKey(noted) : null;
+      if (el) this.pick(el, 'pointer');
     });
 
     this.container.addEventListener('input', (e: Event) => {
@@ -566,17 +635,34 @@ export class Settings {
       }
     });
 
-    // Pointer theme preview: hovering a swatch previews that theme app-wide;
-    // moving the pointer off the swatches restores the currently selected theme
-    // immediately (no deferring until focus lands elsewhere).
-    this.container.addEventListener('mouseover', (e: MouseEvent) => {
-      const sw = (e.target as HTMLElement).closest<HTMLElement>('.theme-swatch');
-      if (sw?.dataset.themeId) previewTheme(sw.dataset.themeId);
+    // Hover moves focus, except that while a text field has the caret the
+    // hovered control is only noted. Hovering a swatch previews its theme
+    // app-wide; leaving it restores the selected theme at once.
+    this.container.addEventListener('nav:hover', (e: Event) => {
+      const el = e.target as HTMLElement;
+      if (!el.hasAttribute('data-focusable')) return;
+      const caret = this.caretInput();
+      if (caret && caret !== el) {
+        this.notedKey = this.keyOf(el);
+        if (el.dataset.themeId) {
+          this.themeHoverToken++;
+          previewTheme(el.dataset.themeId);
+        }
+        return;
+      }
+      this.notedKey = null;
+      this.pick(el, 'pointer');
     });
-    this.container.addEventListener('mouseout', (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest('.theme-swatch')) return;
-      const rel = e.relatedTarget as HTMLElement | null;
-      if (!rel || !rel.closest('.theme-swatch')) previewTheme(this.selectedTheme);
+    this.container.addEventListener('nav:unhover', (e: Event) => {
+      const el = e.target as HTMLElement;
+      if (el.dataset.themeId) this.restoreThemeAfterHover();
+      if (this.notedKey !== null && this.notedKey === this.keyOf(el)) this.notedKey = null;
+      // A field with the caret keeps its ring.
+      if (this.caretInput() || el !== this.resolveFocused()) return;
+      this.concealed = true;
+      this.markRow(null);
+      this.focusScope.conceal();
+      Focus.flush();
     });
 
     this.container.addEventListener('scroll', (e: Event) => {
@@ -588,6 +674,48 @@ export class Settings {
         this.syncCategoryFromScroll(target);
       });
     }, true);
+    // A wheel takes the pane over, so its scroll position picks the category.
+    this.container.addEventListener('nav:wheel', (e: Event) => {
+      const main = e.target instanceof Element ? e.target.closest<HTMLElement>('.settings-scroll') : null;
+      if (!main || !this.ignoreCategoryScroll) return;
+      this.endCategoryHold();
+      if (this.categorySyncFrame !== null) return;
+      this.categorySyncFrame = window.requestAnimationFrame(() => {
+        this.categorySyncFrame = null;
+        this.syncCategoryFromScroll(main);
+      });
+    });
+  }
+
+  private collectionDescription(kind: 'continue' | 'watchlist'): string {
+    const account = this.watchlistAccount;
+    if (!account) return '';
+    let count: number;
+    let concealed: boolean;
+    if (kind === 'continue') {
+      const entries = StorageService.getResumeList(account.id);
+      count = entries.length;
+      concealed = entries.some(isResumeConcealed);
+    } else {
+      const entries = [
+        ...StorageService.getWatchlist(account.id, 'vod'),
+        ...StorageService.getWatchlist(account.id, 'series'),
+      ];
+      count = entries.length;
+      concealed = entries.some(isWatchlistConcealed);
+    }
+    return t(kind === 'continue'
+      ? concealed ? 'settings.clearContinueWatchingDescriptionUncounted' : 'settings.clearContinueWatchingDescription'
+      : concealed ? 'settings.clearWatchlistDescriptionUncounted' : 'settings.clearWatchlistDescription', {
+      account: account.name, count,
+    });
+  }
+
+  refreshCollectionCounts(): void {
+    const resumeHint = this.container.querySelector<HTMLElement>('#continue-watching-count-hint');
+    const watchlistHint = this.container.querySelector<HTMLElement>('#watchlist-count-hint');
+    if (resumeHint) morph(resumeHint, html`${this.collectionDescription('continue')}`);
+    if (watchlistHint) morph(watchlistHint, html`${this.collectionDescription('watchlist')}`);
   }
 
   render(): void {
@@ -664,6 +792,10 @@ export class Settings {
                   <div class="settings-item">
                     ${dropdown('app-language', languageOptions(), localePreference)}
                     <div class="settings-item-hint">${t('settings.languageHint')}</div>
+                  </div>
+                  <div class="settings-item">
+                    <div class="settings-item-title">${t('settings.version')}</div>
+                    <div class="settings-item-value">${CONFIG.VERSION}</div>
                   </div>
                 </div>
 
@@ -1046,11 +1178,19 @@ export class Settings {
                 </div>
                 ${this.watchlistAccount ? html`
                   <div class="settings-item settings-item--action">
+                    <div class="settings-item-title">${t('catalog.continueWatching')}</div>
+                    <button class="btn btn-danger" data-focusable id="clear-continue-watching"
+                            aria-label="${t('settings.clearContinueWatching')}">${t('settings.clearContinueWatching')}</button>
+                    <div class="settings-item-hint" id="continue-watching-count-hint" aria-live="polite">
+                      ${this.collectionDescription('continue')}
+                    </div>
+                  </div>
+                  <div class="settings-item settings-item--action">
                     <div class="settings-item-title">${t('common.watchlist')}</div>
                     <button class="btn btn-danger" data-focusable id="clear-watchlist"
                             aria-label="${t('settings.clearWatchlist')}">${t('settings.clearWatchlist')}</button>
-                    <div class="settings-item-hint">
-                      ${t('settings.clearWatchlistDescription', { account: this.watchlistAccount.name })}
+                    <div class="settings-item-hint" id="watchlist-count-hint" aria-live="polite">
+                      ${this.collectionDescription('watchlist')}
                     </div>
                   </div>
                 ` : ''}
@@ -1083,7 +1223,7 @@ export class Settings {
       </div>
     `);
 
-    this.nav.focusFirst();
+    this.enter();
     void this.refreshSetupInfo();
     // Sync uploads from the local service on every Settings open. Subsequent
     // updates arrive via the Luna `serviceEvents` push channel (wired in
@@ -1239,11 +1379,18 @@ export class Settings {
   // An open dropdown menu is absolutely positioned over the settings pane, so an
   // untrapped move scores items behind it. The restriction is released straight
   // after: the pane is re-morphed on every render, so a held element goes stale.
-  private moveFocus(action: NavDirection): void {
+  // Up walks the category column on its own, so Up from the first
+  // category leaves for the tab bar rather than the pane beside it.
+  private moveFocus(action: NavDirection): boolean {
     const open = this.container.querySelector<HTMLElement>('.dropdown.open');
-    this.nav.setRestrict(open?.querySelector<HTMLElement>('.dropdown-menu') ?? null);
-    this.nav.move(action);
+    const column = action === 'up'
+      && this.nav.focused?.classList.contains('settings-nav-item')
+      ? this.container.querySelector<HTMLElement>('.settings-sidebar') : null;
+    this.nav.setRestrict(open?.querySelector<HTMLElement>('.dropdown-menu') ?? column);
+    this.via = 'key';
+    const moved = this.nav.move(action);
     this.nav.setRestrict(null);
+    return moved || !!open;
   }
 
   private restoreOpenDropdownFocus(open: HTMLElement): void {
@@ -1252,21 +1399,29 @@ export class Settings {
     if (option) this.nav.focus(option);
   }
 
-  handleAction(action: Action): void {
+  // False when Up or Down found nothing to move to, so the host can hand Up
+  // to the tab bar.
+  handleAction(action: Action): boolean {
     if (this.confirmationPrompt.visible) {
       this.confirmationPrompt.handleAction(action);
-      return;
+      return true;
     }
-    if (this.liveCategoryPicker.visible) {
-      this.liveCategoryPicker.handleAction(action);
-      return;
+    this.via = 'key';
+    this.syncNav();
+    // After the pointer left, the first key only shows where focus is, so
+    // nothing acts on a control nobody could see.
+    if (this.concealed && (isFocusMove(action) || action === 'select')) {
+      const shown = this.resolveFocused();
+      if (shown) {
+        this.pick(shown, 'key');
+        return true;
+      }
     }
 
     switch (action) {
       case 'up':
       case 'down':
-        this.moveFocus(action);
-        break;
+        return this.moveFocus(action);
 
       case 'right':
         if (this.nav.focused?.classList.contains('settings-nav-item')) {
@@ -1302,6 +1457,7 @@ export class Settings {
         break;
       }
     }
+    return true;
   }
 
   focusReminderEntry(): void {
@@ -1418,6 +1574,20 @@ export class Settings {
         },
         onCancel: () => {},
       });
+    } else if (el.id === 'clear-continue-watching' && this.watchlistAccount) {
+      const account = this.watchlistAccount;
+      this.confirmationPrompt.show({
+        title: t('catalog.clearContinueWatchingTitle'),
+        message: t('settings.clearContinueWatchingMessage', { account: account.name }),
+        confirmLabel: t('common.clearAll'),
+        cancelLabel: t('common.cancel'),
+        onConfirm: () => {
+          StorageService.clearResumeList(account.id);
+          this.refreshCollectionCounts();
+          showToast(t('settings.continueWatchingCleared', { account: account.name }));
+        },
+        onCancel: () => {},
+      });
     } else if (el.id === 'clear-watchlist' && this.watchlistAccount) {
       const account = this.watchlistAccount;
       this.confirmationPrompt.show({
@@ -1427,6 +1597,7 @@ export class Settings {
         cancelLabel: t('common.cancel'),
         onConfirm: () => {
           StorageService.clearWatchlist(account.id);
+          this.refreshCollectionCounts();
           showToast(t('settings.watchlistCleared', { account: account.name }));
         },
         onCancel: () => {},
@@ -1618,6 +1789,7 @@ export class Settings {
         <span>${t('settings.moviesSeriesMediaData')} <strong>${formatBytes(usage.categories.catalog.bytes)}</strong></span>
         <span>${t('settings.onlineSubtitles')} <strong>${formatBytes(usage.categories.subtitle.bytes)}</strong></span>
         <span>${t('settings.channelHealth')} <strong>${formatBytes(usage.categories.health.bytes)}</strong></span>
+        <span>${t('settings.searchIndex')} <strong>${formatBytes(usage.categories.search.bytes)}</strong></span>
       </div>
     `);
   }
@@ -1687,12 +1859,218 @@ export class Settings {
     });
   }
 
+  // The pointer leaving a swatch for another hovers the next one in the same
+  // task; restoring the selected theme in between would restyle the whole
+  // document twice per move, so the restore waits until that hover is done.
+  private restoreThemeAfterHover(): void {
+    const token = ++this.themeHoverToken;
+    void Promise.resolve().then(() => {
+      if (token === this.themeHoverToken) previewTheme(this.selectedTheme);
+    });
+  }
+
   private onNavFocus(el: HTMLElement | null): void {
-    this.container.querySelector('.settings-advanced-row.focused')
-      ?.classList.remove('focused');
-    el?.closest('.settings-advanced-row')?.classList.add('focused');
+    this.themeHoverToken++;
     if (el?.dataset.themeId) previewTheme(el.dataset.themeId);
     else previewTheme(this.selectedTheme);
+    if (!el) return;
+    const key = this.keyOf(el);
+    if (key !== this.landedKey) this.landedKey = null;
+    // Only the owner of the keys shows or reveals a key's focus; otherwise
+    // the pick is noted for when the keys come back. The pointer's pick
+    // lights where it rests either way.
+    const owner = Focus.owner() === this.focusScope;
+    if (!owner && this.via !== 'pointer') {
+      this.focusScope.track(key);
+      return;
+    }
+    this.concealed = false;
+    this.focusScope.focus(key, this.via);
+    this.markRow(el);
+    if (!owner) return;
+    Focus.flush();
+    // A key moving focus on while the pane settles takes the category along;
+    // the pointer takes the pane over, so its scroll position picks it.
+    if (this.categoryAimed && key !== this.landedKey) {
+      if (this.via === 'key' && el.closest('.settings-category')) this.markCategoryOf(el);
+      else this.endCategoryHold();
+    }
+  }
+
+  private pick(el: HTMLElement, via: Via): void {
+    this.via = via;
+    this.nav.focus(el);
+    this.via = 'key';
+  }
+
+  // Opening Settings returns to the control it was left on, brought into
+  // view, or starts at the current category.
+  private enter(): void {
+    this.notedKey = null;
+    this.land();
+    if (Focus.owner() === this.focusScope) Focus.flush();
+  }
+
+  /** Back onto Settings from the tab bar: the last control, brought into view. */
+  resumeFocus(): void {
+    this.land();
+    Focus.flush();
+  }
+
+  // The remembered control, under the key of what stands in for it now, with
+  // the category list showing where it is.
+  private land(): void {
+    const last = this.focusScope.focusKey;
+    const el = (last !== null ? this.resolveKey(last) : null)
+      ?? this.resolveKey(this.defaultKey() ?? '');
+    this.concealed = false;
+    this.nav.focused = el;
+    const key = el ? this.keyOf(el) : this.defaultKey();
+    this.landedKey = key;
+    this.focusScope.focus(key, 'resume');
+    this.markRow(el);
+    this.markCategoryOf(el);
+  }
+
+  // Scrolling the control Settings came back to into view must not let the
+  // pane's scroll position pick another category.
+  private revealLanded(key: string): false {
+    if (key !== this.landedKey) return false;
+    this.landedKey = null;
+    this.markCategoryOf(this.resolveKey(key));
+    return false;
+  }
+
+  // A smooth reveal scroll runs over many frames, so the category stays put
+  // until the pane holds still.
+  private markCategoryOf(el: HTMLElement | null): void {
+    const category = el?.closest<HTMLElement>('.settings-category')?.dataset.settingsCategory as
+      SettingsCategory | undefined;
+    if (!el || !category) return;
+    this.setActiveCategory(category);
+    const main = el.closest<HTMLElement>('.settings-scroll');
+    if (!main) {
+      this.holdCategoryScroll();
+      return;
+    }
+    if (this.categorySyncFrame !== null) {
+      window.cancelAnimationFrame(this.categorySyncFrame);
+      this.categorySyncFrame = null;
+    }
+    if (this.categoryScrollFrame !== null) window.cancelAnimationFrame(this.categoryScrollFrame);
+    this.ignoreCategoryScroll = true;
+    this.watchCategoryScroll(main, category, null);
+    this.categoryAimed = true;
+  }
+
+  // The user took the pane over: the scroll position picks the category again.
+  private endCategoryHold(): void {
+    if (this.categoryScrollFrame !== null) {
+      window.cancelAnimationFrame(this.categoryScrollFrame);
+      this.categoryScrollFrame = null;
+    }
+    if (this.categoryFocusFrame !== null) {
+      window.cancelAnimationFrame(this.categoryFocusFrame);
+      this.categoryFocusFrame = null;
+    }
+    this.ignoreCategoryScroll = false;
+    this.categoryAimed = false;
+  }
+
+  private syncNav(): void {
+    const el = this.resolveFocused();
+    if (el) this.nav.focused = el;
+  }
+
+  private resolveFocused(): HTMLElement | null {
+    const key = this.focusScope.focusKey;
+    return key !== null ? this.resolveKey(key) : null;
+  }
+
+  private caretInput(): HTMLInputElement | null {
+    const active = document.activeElement;
+    return active instanceof HTMLInputElement && this.container.contains(active) ? active : null;
+  }
+
+  // An Advanced row is tinted while one of its controls has the focus.
+  private markRow(el: HTMLElement | null): void {
+    const row = el?.closest('.settings-advanced-row') ?? null;
+    if (row === this.currentRow) return;
+    this.currentRow?.classList.remove('is-current');
+    row?.classList.add('is-current');
+    this.currentRow = row;
+  }
+
+  private defaultKey(): string | null {
+    const item = this.container.querySelector<HTMLElement>('.settings-nav-item.active')
+      ?? this.container.querySelector<HTMLElement>('.settings-nav-item');
+    return item ? this.keyOf(item) : null;
+  }
+
+  // A key names the control by its data-key or id, or else by its place
+  // among its kind under the nearest ancestor with an id. Most of Settings
+  // is rebuilt on every open, and the key finds the new node.
+  private keyOf(el: HTMLElement): string {
+    if (el.dataset.key) return `=${el.dataset.key}`;
+    if (el.id) return `#${el.id}`;
+    const anchor = this.anchorOf(el);
+    const kind = this.kindOf(el);
+    const peers = this.peersOf(anchor, kind);
+    const attr = anchor === this.container ? '' : anchor.id ? `#${anchor.id}` : `@${anchor.dataset.id ?? ''}`;
+    return `${attr}|${kind}|${String(peers.indexOf(el))}`;
+  }
+
+  private resolveKey(key: string): HTMLElement | null {
+    const el = this.findKey(key);
+    if (!el || !el.hasAttribute('data-focusable')) return null;
+    // An option of a closed menu can't be seen, so its trigger stands in.
+    const menu = el.classList.contains('dropdown-option') ? el.closest('.dropdown') : null;
+    if (menu && !menu.classList.contains('open')) {
+      return menu.querySelector<HTMLElement>('.dropdown-trigger[data-focusable]');
+    }
+    return el;
+  }
+
+  private findKey(key: string): HTMLElement | null {
+    if (key.charAt(0) === '=') {
+      const value = key.slice(1);
+      return Array.from(this.container.querySelectorAll<HTMLElement>('[data-key]'))
+        .find(el => el.dataset.key === value) ?? null;
+    }
+    let el: HTMLElement | null = null;
+    const last = key.lastIndexOf('|');
+    if (key.charAt(0) === '#' && last < 0) {
+      el = this.byAttr('id', key.slice(1));
+    } else if (last > 0) {
+      const kindAt = key.lastIndexOf('|', last - 1);
+      if (kindAt < 0) return null;
+      const attr = key.slice(0, kindAt);
+      const anchor = attr === '' ? this.container
+        : attr.charAt(0) === '#' ? this.byAttr('id', attr.slice(1))
+          : this.byAttr('data-id', attr.slice(1));
+      if (anchor) el = this.peersOf(anchor, key.slice(kindAt + 1, last))[Number(key.slice(last + 1))] ?? null;
+    }
+    return el;
+  }
+
+  private byAttr(name: string, value: string): HTMLElement | null {
+    if (!value) return null;
+    return this.container.querySelector<HTMLElement>(
+      `[${name}="${value.replace(/["\\]/g, '\\$&')}"]`);
+  }
+
+  private anchorOf(el: HTMLElement): HTMLElement {
+    const anchor = el.parentElement?.closest<HTMLElement>('[id]:not([id=""]), [data-id]:not([data-id=""])');
+    return anchor && this.container.contains(anchor) && anchor !== this.container ? anchor : this.container;
+  }
+
+  private kindOf(el: HTMLElement): string {
+    return `${el.tagName.toLowerCase()}.${el.classList[0] ?? ''}`;
+  }
+
+  private peersOf(anchor: HTMLElement, kind: string): HTMLElement[] {
+    return Array.from(anchor.querySelectorAll<HTMLElement>('[data-focusable]'))
+      .filter(el => !el.id && !el.dataset.key && this.kindOf(el) === kind && this.anchorOf(el) === anchor);
   }
 
   private setActiveCategory(category: SettingsCategory): void {
@@ -1711,6 +2089,7 @@ export class Settings {
     if (!main) return;
     this.setActiveCategory(category);
     this.ignoreCategoryScroll = true;
+    this.categoryAimed = false;
     if (this.categoryScrollFrame !== null) {
       window.cancelAnimationFrame(this.categoryScrollFrame);
     }
@@ -1722,38 +2101,41 @@ export class Settings {
         maxScrollTop,
       ),
     );
-    target.scrollIntoView({
-      block: 'start',
-      inline: 'nearest',
-      behavior: 'auto',
-    });
+    // The pane's scroll-behavior decides whether the jump animates.
+    main.scrollTop = targetScrollTop;
     this.watchCategoryScroll(main, category, targetScrollTop);
   }
 
+  // Without a target, the scroll may not have started yet, so the pane must
+  // hold still longer before the category is settled; a frame cap keeps
+  // the scroll-picked category from staying off for good.
   private watchCategoryScroll(
     main: HTMLElement,
     category: SettingsCategory,
-    targetScrollTop: number,
+    targetScrollTop: number | null,
   ): void {
     let lastScrollTop = main.scrollTop;
     let moving = false;
     let stableFrames = 0;
+    let frames = 0;
+    const settled = targetScrollTop === null ? CATEGORY_SCROLL_IDLE_FRAMES : CATEGORY_SCROLL_STABLE_FRAMES;
     const watch = () => {
       const current = main.scrollTop;
       const delta = Math.abs(current - lastScrollTop);
-      const reachedTarget = Math.abs(current - targetScrollTop) <= 1;
+      const reachedTarget = targetScrollTop !== null && Math.abs(current - targetScrollTop) <= 1;
       if (delta > 0.5) {
         moving = true;
         stableFrames = 0;
-      } else if (moving) {
+      } else if (moving || targetScrollTop === null) {
         stableFrames++;
       }
       lastScrollTop = current;
 
-      if (reachedTarget || stableFrames >= 4) {
+      if (reachedTarget || stableFrames >= settled || ++frames >= CATEGORY_SCROLL_MAX_FRAMES) {
         this.ignoreCategoryScroll = false;
         this.categoryScrollFrame = null;
-        if (reachedTarget) this.setActiveCategory(category);
+        this.categoryAimed = false;
+        if (reachedTarget || targetScrollTop === null) this.setActiveCategory(category);
         else this.syncCategoryFromScroll(main);
         return;
       }
@@ -1798,6 +2180,14 @@ export class Settings {
   private focusCategoryFirst(category: SettingsCategory): void {
     const pane = this.container.querySelector<HTMLElement>(`#settings-${category}`);
     if (!pane) return;
+    this.nav.setRestrict(pane);
+    const focused = this.nav.focusFirst();
+    this.nav.setRestrict(null);
+    if (focused) this.markCategoryOf(this.nav.focused);
+  }
+
+  // The scroll that brings focus into view must not re-pick the category.
+  private holdCategoryScroll(): void {
     if (this.categorySyncFrame !== null) {
       window.cancelAnimationFrame(this.categorySyncFrame);
       this.categorySyncFrame = null;
@@ -1806,10 +2196,6 @@ export class Settings {
       window.cancelAnimationFrame(this.categoryFocusFrame);
     }
     this.ignoreCategoryScroll = true;
-    this.nav.setRestrict(pane);
-    const focused = this.nav.focusFirst();
-    this.nav.setRestrict(null);
-    if (focused) this.setActiveCategory(category);
     this.categoryFocusFrame = window.requestAnimationFrame(() => {
       this.categoryFocusFrame = null;
       if (this.categoryScrollFrame === null) this.ignoreCategoryScroll = false;
@@ -2012,7 +2398,7 @@ export class Settings {
           source.playlistIds = source.playlistIds.filter(id => playlistIds.has(id));
         }
         const options = row.querySelector<HTMLElement>('.manual-epg-scope-options');
-        if (options) morph(options, manualEpgScopeOptions(source, playlists));
+        if (options) morph(options, manualEpgScopeOptions(source, playlists, row.dataset.key ?? ''));
       });
   }
 
@@ -2080,6 +2466,15 @@ export class Settings {
       this.container.querySelectorAll<HTMLElement>('[data-manual-epg-source]'),
     );
     rows.forEach((row, index) => {
+        // Keys follow the row's place, so a row and its buttons never share
+        // a key with another row after one is removed.
+        const key = manualEpgKey(index);
+        const previous = row.dataset.key ?? '';
+        row.dataset.key = key;
+        row.querySelectorAll<HTMLElement>('[data-key]').forEach(el => {
+          const own = el.dataset.key ?? '';
+          if (own.startsWith(`${previous}:`)) el.dataset.key = key + own.slice(previous.length);
+        });
         const priority = row.querySelector('.manual-epg-priority');
         if (priority) priority.textContent = String(index + 1);
         const earlier = row.querySelector<HTMLButtonElement>('.move-epg-earlier');

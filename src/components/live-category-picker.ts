@@ -1,7 +1,8 @@
 import type { Action, PlaylistEntry, XtreamLiveCategoryFilter, XtreamLiveCategorySnapshot } from '../types';
 import { html, raw, type Safe } from '../utils/dom';
 import { morph } from '../utils/morph';
-import { SpatialNav } from '../navigation/spatial-nav';
+import { SpatialNav, isFocusMove } from '../navigation/spatial-nav';
+import { Focus, Tier, type FocusScope } from '../navigation/focus-scope';
 import { t } from '../i18n';
 import { createLogger } from '../utils/logger';
 import type { XtreamLiveCategory } from '../services/xtream-client';
@@ -77,9 +78,14 @@ export function unseenLiveCategoryIds(
   return categoryIds.filter(id => !known.has(id));
 }
 
+let pickerScope: FocusScope | null = null;
+let menuScope: FocusScope | null = null;
+
 export class LiveCategoryPicker {
   private el: HTMLElement | null = null;
   private nav: SpatialNav | null = null;
+  private scope: FocusScope | null = null;
+  private menuScope: FocusScope | null = null;
   private switcher: AccountSwitcher | null = null;
   private options: LiveCategoryPickerOptions | null = null;
   private categories: XtreamLiveCategory[] = [];
@@ -96,8 +102,6 @@ export class LiveCategoryPicker {
   });
   private readonly scrollGuard = new VirtualScrollGuard();
   private scrollFrame: number | null = null;
-  // A wheel scroll can unmount the focused row; D-pad resumes from here.
-  private detachedEntry: number | null = null;
 
   get visible(): boolean {
     return this.el !== null && !this.el.classList.contains('hidden');
@@ -111,9 +115,10 @@ export class LiveCategoryPicker {
     this.selected = new Set();
     this.newIds = [];
     this.entries = [];
-    this.detachedEntry = null;
     this.virtualizer.setScrollOffset(0);
     this.mount().classList.remove('hidden');
+    this.nav?.focus(null);
+    if (this.scope) Focus.push(this.scope);
     void this.load();
   }
 
@@ -123,6 +128,7 @@ export class LiveCategoryPicker {
     this.controller?.abort();
     this.controller = null;
     this.options = null;
+    if (this.scope) Focus.pop(this.scope);
     this.el?.classList.add('hidden');
   }
 
@@ -133,6 +139,7 @@ export class LiveCategoryPicker {
       else this.switcher.handleAction(action);
       return;
     }
+    if (isFocusMove(action) && this.nav.showConcealed()) return;
     switch (action) {
       case 'back':
       case 'yellow':
@@ -144,11 +151,11 @@ export class LiveCategoryPicker {
         return;
       case 'left':
       case 'right':
-        if (!this.nav.focused) this.restoreDetachedEntry();
+        this.restoreDetachedEntry();
         this.nav.move(action);
         return;
       case 'select':
-        if (!this.nav.focused) this.restoreDetachedEntry();
+        this.restoreDetachedEntry();
         if (this.nav.focused) this.activate(this.nav.focused);
         return;
       case 'red':
@@ -167,9 +174,39 @@ export class LiveCategoryPicker {
     el.setAttribute('data-self-activate', '');
     document.body.appendChild(el);
     this.el = el;
-    this.nav = new SpatialNav(el, focused => {
-      this.switcher?.setFocused(!!focused?.hasAttribute('data-live-category-avatar'));
+    // One picker per app; a new instance takes the id over.
+    pickerScope?.dispose();
+    const scope = this.scope = pickerScope = Focus.register({
+      id: 'prompt.live_categories',
+      root: el,
+      restrict: 'self-only',
+      tier: Tier.prompt,
+      onAction: (action) => this.handleAction(action),
+      defaultKey: () => {
+        const focused = this.nav?.focused;
+        return focused && el.contains(focused) ? focused.dataset.key ?? null : null;
+      },
+      // The avatar inside the account slot draws the slot's ring.
+      resolve: (key) => {
+        const match = Array.from(el.querySelectorAll<HTMLElement>('[data-key]'))
+          .find((item) => item.dataset.key === key) ?? null;
+        return match?.hasAttribute('data-live-category-avatar')
+          ? match.querySelector<HTMLElement>('.account-avatar') ?? match
+          : match;
+      },
     });
+    // The open account menu paints its own row and takes the keys, which
+    // still come here to reach it. Like the bar's menu, it lets the pointer
+    // light the list it crosses.
+    menuScope?.dispose();
+    this.menuScope = menuScope = Focus.register({
+      id: 'prompt.live_categories.accounts',
+      root: () => el.querySelector<HTMLElement>('[data-live-category-avatar]'),
+      tier: Tier.prompt,
+      when: () => !!this.switcher?.menuOpen,
+      onAction: (action) => this.handleAction(action),
+    });
+    this.nav = new SpatialNav(el, undefined, { scope });
     el.addEventListener('click', (event: MouseEvent) => {
       const clicked = event.target as HTMLElement;
       // The account switcher handles its own slot, and a click elsewhere
@@ -177,7 +214,7 @@ export class LiveCategoryPicker {
       if (this.switcher?.menuOpen || clicked.closest('[data-live-category-avatar]')) return;
       const target = clicked.closest<HTMLElement>('[data-focusable]');
       if (!target || !this.nav) return;
-      this.nav.focus(target);
+      this.nav.focus(target, 'pointer');
       this.activate(target);
     });
     el.addEventListener('scroll', (event: Event) => {
@@ -311,12 +348,16 @@ export class LiveCategoryPicker {
     const slot = this.el?.querySelector<HTMLElement>('[data-live-category-avatar]');
     if (!slot || !this.options) return;
     if (!this.switcher) {
-      this.switcher = new AccountSwitcher(slot, { onSelect: id => this.switchAccount(id) });
+      this.switcher = new AccountSwitcher(slot, {
+        onSelect: id => this.switchAccount(id),
+        onMenuOpen: () => { if (this.menuScope) Focus.push(this.menuScope); },
+        onMenuClose: () => { if (this.menuScope) Focus.pop(this.menuScope); },
+        onMenuHover: () => this.nav?.focus(slot, 'pointer'),
+      });
       this.switcher.init();
     }
     const accounts = this.switchableAccounts();
     this.switcher.setAccounts(accounts, this.options.accountId);
-    this.switcher.setFocused(!!accounts.length && this.nav?.focused === slot);
   }
 
   // New categories come first under their own header; each category has one row.
@@ -399,21 +440,20 @@ export class LiveCategoryPicker {
     return entry === undefined ? null : Number(entry);
   }
 
+  // A wheel scroll can unmount the focused row; focus still names its entry.
+  private detached(): boolean {
+    const focused = this.nav?.focused;
+    return !!focused && !this.el?.contains(focused);
+  }
+
   // Up/Down step by index, since the neighboring row may not be mounted yet.
   private moveInList(delta: number): boolean {
-    let from = this.focusedEntry();
-    if (from === null && !this.nav?.focused && this.detachedEntry !== null) {
-      from = this.detachedEntry;
-      this.detachedEntry = null;
-      if (!this.stepInList(from, delta)) {
-        // At a list end, remount the row so nav.move() leaves the list from it.
-        this.focusEntry(from);
-        return false;
-      }
-      return true;
-    }
-    this.detachedEntry = null;
-    return from !== null && this.stepInList(from, delta);
+    const from = this.focusedEntry();
+    if (from === null) return false;
+    if (this.stepInList(from, delta)) return true;
+    // At a list end, remount the row so nav.move() leaves the list from it.
+    if (this.detached()) this.focusEntry(from);
+    return false;
   }
 
   private stepInList(from: number, delta: number): boolean {
@@ -430,8 +470,7 @@ export class LiveCategoryPicker {
   }
 
   private restoreDetachedEntry(): void {
-    const index = this.detachedEntry;
-    this.detachedEntry = null;
+    const index = this.detached() ? this.focusedEntry() : null;
     if (index !== null && index < this.entries.length) this.focusEntry(index);
   }
 
@@ -447,7 +486,6 @@ export class LiveCategoryPicker {
     const options = this.options;
     if (!el || !options) return;
     const ready = this.state === 'ready';
-    const focusedEntry = this.focusedEntry();
     const switchable = this.switchableAccounts().length > 0;
     morph(el, html`
       <div class="live-category-view">
@@ -467,7 +505,7 @@ export class LiveCategoryPicker {
                 <div class="live-category-auto-label">${t('liveCategories.autoShowNew')}</div>
                 <div class="live-category-auto-hint">${t('liveCategories.autoShowNewHint')}</div>
               </div>
-              ${sourceToggle(this.autoShowNew)}
+              ${sourceToggle(this.autoShowNew, 'auto-show-new')}
             </div>
             <div class="live-category-summary"><span>${t('liveCategories.selected', {
               count: this.selected.size,
@@ -488,10 +526,6 @@ export class LiveCategoryPicker {
       </div>`);
     const list = this.listElement();
     if (list) this.scrollGuard.syncOffset(list, 'vertical', this.virtualizer.scrollOffset);
-    // morph() resets `class` from the template, dropping the nav highlight.
-    this.nav?.clearDetachedFocus();
-    if (focusedEntry !== null && !this.nav?.focused) this.detachedEntry = focusedEntry;
-    if (this.nav?.focused) this.nav.focused.classList.add('focused');
     this.mountAccount();
   }
 }

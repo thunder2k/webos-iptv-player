@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AccountSwitcher } from './account-switcher';
+import { Focus } from '../navigation/focus-scope';
 import type { PlaylistEntry } from '../types';
 
 function account(id: string, name: string): PlaylistEntry {
@@ -20,6 +21,8 @@ beforeEach(() => {
   sw = new AccountSwitcher(slot, { onSelect });
   sw.init();
 });
+
+afterEach(() => Focus.uninstall());
 
 const avatar = () => slot.querySelector<HTMLElement>('.account-avatar');
 const menuItems = () => Array.from(slot.querySelectorAll('.account-menu-item'));
@@ -113,7 +116,7 @@ describe('AccountSwitcher', () => {
     sw.openMenu();
     // Hover Charlie (dispatch on a child to exercise the closest() lookup).
     slot.querySelector('.account-menu-item[data-account-id="a3"] .account-menu-name')!
-      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
     expect(slot.querySelector('.account-menu-item.focused .account-menu-name')?.textContent).toBe('Charlie');
     sw.handleAction('select'); // OK selects the hovered row
     expect(onSelect).toHaveBeenCalledWith('a3');
@@ -127,12 +130,67 @@ describe('AccountSwitcher', () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(sw.menuOpen).toBe(false);
   });
+});
 
-  it('setFocused toggles the avatar focus ring', () => {
-    sw.setAccounts(A, 'a1');
-    sw.setFocused(true);
-    expect(avatar()?.classList.contains('focused')).toBe(true);
-    sw.setFocused(false);
-    expect(avatar()?.classList.contains('focused')).toBe(false);
+describe('AccountSwitcher with a focus scope', () => {
+  let scoped: AccountSwitcher;
+  let below: ReturnType<typeof Focus.register>;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="below"><div data-key="b1">b1</div></div><div id="slot2"></div>';
+    slot = document.getElementById('slot2')!;
+    below = Focus.register({ id: 'test.below', root: document.getElementById('below')!, defaultKey: () => 'b1' });
+    Focus.setBase(() => below);
+    scoped = new AccountSwitcher(slot, { onSelect }, 'test.accounts');
+    scoped.init();
+    scoped.setAccounts(A, 'a2');
+  });
+
+  const ringed = () => Array.from(slot.querySelectorAll('.focused')).map((n) => n.getAttribute('data-key'));
+
+  it('takes the keys while open, ringing only the current row', () => {
+    scoped.openMenu('key');
+    expect(Focus.owner()?.id).toBe('test.accounts');
+    Focus.flush();
+    expect(ringed()).toEqual(['acc:a2']);
+    Focus.owner()?.handle('down');
+    Focus.flush();
+    expect(ringed()).toEqual(['acc:a3']);
+  });
+
+  it('hands the keys back to the scope below when closed or a row is chosen', () => {
+    scoped.openMenu('key');
+    scoped.closeMenu('back');
+    expect(Focus.owner()).toBe(below);
+    expect(slot.querySelector('.focused')).toBe(null);
+    scoped.openMenu('key');
+    Focus.owner()?.handle('down');
+    Focus.owner()?.handle('select');
+    expect(onSelect).toHaveBeenCalledWith('a3');
+    expect(Focus.owner()).toBe(below);
+  });
+
+  it('moves the ring onto the hovered row', () => {
+    scoped.openMenu('pointer');
+    slot.querySelector('.account-menu-item[data-account-id="a1"] .account-menu-name')!
+      .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    Focus.flush();
+    expect(ringed()).toEqual(['acc:a1']);
+    Focus.owner()?.handle('select');
+    expect(onSelect).toHaveBeenCalledWith('a1');
+  });
+
+  it('closes on a dismissing click before a bubbling handler sees it', () => {
+    scoped.openMenu('pointer');
+    const seen: boolean[] = [];
+    const onBubble = (): void => { seen.push(scoped.menuOpen); };
+    document.addEventListener('click', onBubble);
+    const orig = document.elementFromPoint;
+    document.elementFromPoint = () => document.querySelector('[data-key="b1"]');
+    document.querySelector('[data-key="b1"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    document.elementFromPoint = orig;
+    document.removeEventListener('click', onBubble);
+    expect(seen).toEqual([false]);
+    expect(Focus.owner()).toBe(below);
   });
 });

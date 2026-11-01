@@ -1,3 +1,8 @@
+import { createLogger } from './logger';
+import { Focus } from '../navigation/focus-scope';
+
+const log = createLogger('Dom');
+
 export function $(selector: string, parent: Element | Document = document): HTMLElement | null {
   return parent.querySelector(selector);
 }
@@ -6,16 +11,94 @@ export function $$(selector: string, parent: Element | Document = document): HTM
   return Array.from(parent.querySelectorAll(selector));
 }
 
+// A shown or hidden view flips the base and every `when` that reads
+// `inShownView`, with no input or morph to settle the owner; the pass
+// runs once the whole switch is done.
 export function show(el: HTMLElement | null): void {
   if (!el) return;
   el.style.display = '';
   el.classList.remove('hidden');
+  Focus.reconcile();
 }
 
 export function hide(el: HTMLElement | null): void {
   if (!el) return;
   el.style.display = 'none';
   el.classList.add('hidden');
+  Focus.reconcile();
+}
+
+/** Whether `el` sits in the shown view, or outside every view. */
+export function inShownView(el: Element): boolean {
+  const view = el.closest('.view');
+  return !view || !view.classList.contains('hidden');
+}
+
+// --- Transition end ------------------------------------------------------
+// `addEventListener(…, { once: true })` is Chrome 55+; Chromium 53 ignores
+// `once` and keeps the listener, so remove it by hand.
+// Returns a function that stops waiting.
+export function onceTransitionEnd(el: HTMLElement, callback: () => void): () => void {
+  const onEnd = (): void => {
+    el.removeEventListener('transitionend', onEnd);
+    callback();
+  };
+  el.addEventListener('transitionend', onEnd);
+  return () => el.removeEventListener('transitionend', onEnd);
+}
+
+// --- Focus without scrolling ---------------------------------------------
+// `focus({ preventScroll })` is Chrome 64+; Chromium 53 ignores the option and
+// scrolls the target into view. Detect once whether the engine reads it, and
+// otherwise restore every ancestor's scroll offset after a plain focus.
+
+let preventScrollSupported: boolean | undefined;
+
+function supportsPreventScroll(): boolean {
+  if (preventScrollSupported !== undefined) return preventScrollSupported;
+  let read = false;
+  const probe = {};
+  Object.defineProperty(probe, 'preventScroll', {
+    get: () => { read = true; return true; },
+  });
+  document.createElement('div').focus(probe);
+  preventScrollSupported = read;
+  log.info(
+    'Focus option detected',
+    'event=compat.focus.preventScroll',
+    `supported=${read ? 1 : 0}`,
+  );
+  return read;
+}
+
+export function focusWithoutScroll(el: HTMLElement): void {
+  if (supportsPreventScroll()) {
+    // eslint-disable-next-line webos-compat/unsupported-patterns -- feature-detected above
+    el.focus({ preventScroll: true });
+    return;
+  }
+  const offsets: { node: Element; top: number; left: number }[] = [];
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    offsets.push({ node, top: node.scrollTop, left: node.scrollLeft });
+  }
+  el.focus();
+  for (const { node, top, left } of offsets) {
+    if (node.scrollTop !== top) node.scrollTop = top;
+    if (node.scrollLeft !== left) node.scrollLeft = left;
+  }
+}
+
+// Overrides the CSS smooth-scroll policy for one synchronous scroll. Goes
+// through setProperty, which works whether or not the engine reflects
+// `style.scrollBehavior`.
+export function withInstantScroll(nodes: HTMLElement[], scroll: () => void): void {
+  const saved = nodes.map((node) => node.style.getPropertyValue('scroll-behavior'));
+  nodes.forEach((node) => node.style.setProperty('scroll-behavior', 'auto'));
+  try {
+    scroll();
+  } finally {
+    nodes.forEach((node, i) => node.style.setProperty('scroll-behavior', saved[i]));
+  }
 }
 
 // --- Safe HTML templating ------------------------------------------------

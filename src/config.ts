@@ -33,6 +33,19 @@ export const CONFIG = {
     // Treat fast successive focus changes as held-key navigation. The repeat
     // interval measured on LG remotes is around 80 ms; leave room for load.
     FOCUS_REPEAT_WINDOW_MS: 180,
+    // Longer than a native smooth reveal takes to bring its row in on a TV.
+    REVEAL_SETTLE_MS: 800,
+    EDGE_SCROLL_DWELL_MS: 400,
+    EDGE_SCROLL_ZONE_PX: 64,
+    // Edge scroll starts slow for precise stops and eases up to the top
+    // speed over the ramp while the pointer stays on the same edge.
+    EDGE_SCROLL_MIN_SPEED_PX_PER_SECOND: 600,
+    EDGE_SCROLL_MAX_SPEED_PX_PER_SECOND: 2400,
+    EDGE_SCROLL_RAMP_MS: 2500,
+    // A track that reached its end under a resting pointer may still grow,
+    // such as search results loading more: watch it this long to resume.
+    EDGE_SCROLL_PARK_MS: 3000,
+    EDGE_SCROLL_PARK_POLL_MS: 150,
   },
   PLAYER: {
     LIVE_PREVIEW_UPCOMING_COUNT: 4,
@@ -93,6 +106,9 @@ export const CONFIG = {
   // Xtream Movies/Series catalog + resume tuning.
   XTREAM: {
     DEFAULT_CATALOG_REFRESH_INTERVAL_MS: 6 * 60 * 60 * 1000,
+    CATALOG_RETRY_DELAY_MS: 60 * 1000,
+    CATALOG_LOAD_BUDGET_MS: 60 * 1000,
+    CATALOG_LOAD_CONCURRENCY: 2,
     ACCOUNT_MAX_BYTES: 1024 * 1024,      // account/server metadata response budget
     CATEGORY_MAX_BYTES: 2 * 1024 * 1024, // category-list response budget
     CATALOG_MAX_BYTES: 32 * 1024 * 1024, // full or per-category stream-list budget
@@ -102,9 +118,7 @@ export const CONFIG = {
     RAIL_ITEMS: 20,                      // posters shown per rail before the "all categories" drill-in
     RESUME_MIN_SECS: 15,                 // below this, treat as "start over" (don't store a resume point)
     RESUME_FINISH_PAD: 30,               // within this of the end = finished (clear the resume point)
-    SEARCH_INITIAL_RESULTS: 200,         // first ranked results published per Search group
-    SEARCH_EXPANSION_FACTOR: 5,          // grow retained results near a virtual window boundary
-    SEARCH_RESULT_CAP: 50_000,           // final per-group cap after progressive expansion
+    RESUME_MAX_ITEMS: 50,                // Continue Watching entries per account and kind
     ARCHIVE_TTL_MS: 10 * 60 * 1000,      // per-channel get_simple_data_table freshness
     WATCHLIST_MAX_ITEMS: 200,            // per account and content type
   },
@@ -123,8 +137,26 @@ export const CONFIG = {
     MAX_VISIBLE_ITEMS: 50,
   },
 
-  SEARCH_HISTORY: {
-    MAX_ENTRIES: 10,
+  SEARCH: {
+    // Budget for the worker's IndexedDB reads before the page posts the index instead.
+    CACHE_READ_TIMEOUT_MS: 1200,
+    // Documents per index message when the page posts a source itself, one per frame.
+    INDEX_CHUNK_SIZE: 2000,
+    // Largest share of the free cache room one stored index may take.
+    INDEX_BUDGET_SHARE: 0.1,
+    INDEX_WRITE_TIMEOUT_MS: 5000,
+    // After a search index attempt or a rebuild of a lost index fails, its
+    // queries search on the main thread for this long before the worker is
+    // tried again.
+    INDEX_RETRY_DELAY_MS: 5000,
+    // Background index builds are not latency-bound, so their reads may run longer.
+    PREWARM_READ_TIMEOUT_MS: 10_000,
+    // Latest the background index build waits for an idle period.
+    PREWARM_IDLE_TIMEOUT_MS: 5000,
+    INITIAL_RESULTS: 200,       // first ranked results published per group
+    EXPANSION_FACTOR: 5,        // grow retained results near a virtual window boundary
+    RESULT_CAP: 50_000,         // final per-group cap after progressive expansion
+    HISTORY_MAX_ENTRIES: 10,    // recent searches kept
   },
 
   CHANNEL_HEALTH: {
@@ -163,5 +195,8 @@ export const CONFIG = {
     FORWARD: 417,
     NUM_0: 48,
     NUM_9: 57,
+    // webOS sends these as keydown when the Magic Remote cursor shows or hides.
+    CURSOR_SHOW: 1536,
+    CURSOR_HIDE: 1537,
   },
 } as const;

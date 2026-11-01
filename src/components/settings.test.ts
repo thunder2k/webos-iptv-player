@@ -68,6 +68,7 @@ const {
           catalog: { bytes: 286 * 1024 * 1024, entries: 7 },
           subtitle: { bytes: 41 * 1024 * 1024, entries: 2 },
           health: { bytes: 0, entries: 0 },
+          search: { bytes: 3 * 1024 * 1024, entries: 2 },
         },
         budgetBytes: 1024 * 1024 * 1024,
         originUsageBytes: null,
@@ -155,6 +156,9 @@ const {
       remove: vi.fn(),
       clearRecentlyWatched: vi.fn(),
       clearWatchlist: vi.fn(),
+      clearResumeList: vi.fn(),
+      getResumeList: vi.fn((_accountId: string): unknown[] => []),
+      getWatchlist: vi.fn((_accountId: string, _kind: 'vod' | 'series'): unknown[] => []),
     },
     toastMock: { showToast: vi.fn() },
     setupMock: {
@@ -236,6 +240,9 @@ import { PlaylistService } from '../services/playlist-service';
 import { EpgService } from '../services/epg-service';
 import { channelKey, legacyChannelKey } from '../utils/channel';
 import { morph } from '../utils/morph';
+import { Focus } from '../navigation/focus-scope';
+import { CONFIG } from '../config';
+import { ParentalControlService } from '../services/parental-control';
 
 let container: HTMLElement;
 let onSave: ReturnType<typeof vi.fn>;
@@ -276,12 +283,15 @@ beforeEach(() => {
   onSave = vi.fn();
   onChannelsChanged = vi.fn();
   settings = new Settings(container, onSave, onChannelsChanged);
+  Focus.setBase(() => settings.focusScope);
 });
 
 function click(selector: string): void {
   container.querySelector<HTMLElement>(selector)!
     .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
+
+afterEach(() => Focus.uninstall());
 
 describe('Settings.render', () => {
   it('renders the category sidebar with General first', () => {
@@ -410,8 +420,20 @@ describe('Settings.render', () => {
     expect(container.querySelector('.settings-section .settings-section')).toBeNull();
   });
 
+  it('shows the app version just under the Language selection', () => {
+    settings.render();
+    const languageSection = container.querySelector('.settings-general-language')!;
+    const items = Array.from(languageSection.querySelectorAll('.settings-item'));
+    expect(items).toHaveLength(2);
+    const title = items[1].querySelector('.settings-item-title')!;
+    expect(title.textContent?.trim()).toBe('Version');
+    expect(items[1].querySelector('.settings-item-value')?.textContent?.trim())
+      .toBe(CONFIG.VERSION);
+  });
+
   it('opens reminder management from the count-bearing guide entry', () => {
     const onManageReminders = vi.fn();
+    settings.focusScope.dispose();
     settings = new Settings(container, onSave, onChannelsChanged, onManageReminders);
     settings.render();
 
@@ -495,6 +517,7 @@ describe('Settings.render', () => {
     container.remove();
     container = document.createElement('div');
     document.body.appendChild(container);
+    settings.focusScope.dispose();
     settings = new Settings(
       container, onSave, onChannelsChanged, undefined, undefined, undefined, authorize);
     state.playlists = [{ id: 'p1', name: 'P1', url: 'http://a', source: 'url' }];
@@ -929,7 +952,8 @@ describe('Settings.render', () => {
       ?.getAttribute('transform')).toBe('rotate(-90 60 60)');
     const breakdown = container.querySelector('.cache-usage-breakdown')!;
     expect(breakdown.previousElementSibling?.classList.contains('cache-usage-total')).toBe(true);
-    expect(breakdown.children).toHaveLength(5);
+    expect(breakdown.children).toHaveLength(6);
+    expect(breakdown.lastElementChild?.textContent).toBe('Search Index 3.00 MiB');
     expect(breakdown.textContent).toContain('286 MiB');
     expect(breakdown.textContent).toContain('92.0 MiB');
     expect(breakdown.textContent).toContain('Channel Health');
@@ -960,24 +984,29 @@ describe('Settings theme picker', () => {
     expect(active[0].getAttribute('data-theme-id')).toBe('arctic');
   });
 
-  it('previews on pointer hover and restores the selected theme when the pointer leaves', () => {
+  it('previews on pointer hover and restores the selected theme when the pointer leaves', async () => {
     // Select Arctic (pending), then hover a different swatch and move the pointer off.
     click('.theme-swatch[data-theme-id="arctic"]');
     const amber = container.querySelector<HTMLElement>('.theme-swatch[data-theme-id="vintage-amber"]')!;
-    amber.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    amber.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
     expect(themeMock.previewTheme).toHaveBeenLastCalledWith('vintage-amber');
     // Leaving to a non-swatch restores the selected (Arctic), not the saved (midnight).
-    amber.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    amber.dispatchEvent(new CustomEvent('nav:unhover', { bubbles: true }));
+    await Promise.resolve();
     expect(themeMock.previewTheme).toHaveBeenLastCalledWith('arctic');
   });
 
-  it('keeps previewing when the pointer moves between swatches', () => {
+  it('keeps previewing when the pointer moves between swatches', async () => {
     const arctic = container.querySelector<HTMLElement>('.theme-swatch[data-theme-id="arctic"]')!;
     const amber = container.querySelector<HTMLElement>('.theme-swatch[data-theme-id="vintage-amber"]')!;
+    arctic.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
     themeMock.previewTheme.mockClear();
-    arctic.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: amber }));
-    // Moving swatch→swatch must NOT restore the saved theme.
-    expect(themeMock.previewTheme).not.toHaveBeenCalled();
+    arctic.dispatchEvent(new CustomEvent('nav:unhover', { bubbles: true }));
+    amber.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    await Promise.resolve();
+    // Each theme change restyles the whole document, so swatch→swatch must
+    // not restore the selected theme in between.
+    expect(themeMock.previewTheme.mock.calls).toEqual([['vintage-amber']]);
   });
 
   it('persists the selected theme only on Save & Apply', () => {
@@ -1302,10 +1331,101 @@ describe('Settings Recently Watched clearing', () => {
       settings.render();
     });
 
+    it('hides both collection clear settings without an enabled Xtream account', () => {
+      const collections = (): Element[] => ['#clear-continue-watching', '#clear-watchlist']
+        .map(id => container.querySelector(id)).filter((el): el is Element => !!el);
+      expect(collections()).toHaveLength(2);
+
+      state.playlists = [{ id: 'p1', name: 'P1', url: 'http://host/a', source: 'url' }];
+      settings.render();
+      expect(collections()).toEqual([]);
+
+      state.playlists = [{
+        id: 'x1', name: 'Account Alpha', url: 'http://host', source: 'xtream', enabled: false,
+        xtream: { username: 'u', password: 'p' },
+      }];
+      settings.render();
+      expect(collections()).toEqual([]);
+    });
+
     it('shows the selected account in the Watchlist clear setting', () => {
       const action = container.querySelector('#clear-watchlist')?.closest('.settings-item--action');
       expect(action?.textContent).toContain('Watchlist');
       expect(action?.textContent).toContain('Account Bravo');
+    });
+
+    it('shows counts for the selected account in both collection settings', () => {
+      storageMock.getResumeList.mockReturnValueOnce([{}, {}, {}]);
+      storageMock.getWatchlist.mockReturnValueOnce([{}, {}]).mockReturnValueOnce([{}]);
+      settings.render();
+      const resume = container.querySelector('#clear-continue-watching')?.closest('.settings-item--action');
+      const watchlist = container.querySelector('#clear-watchlist')?.closest('.settings-item--action');
+      expect(resume?.textContent).toContain('Account Bravo');
+      expect(resume?.textContent).toContain('Clear saved playback progress for movies and series in "Account Bravo" (3).');
+      expect(resume?.textContent).toContain('(3)');
+      expect(watchlist?.textContent).toContain('(3)');
+      expect(storageMock.getResumeList).toHaveBeenLastCalledWith('x2');
+      expect(storageMock.getWatchlist).toHaveBeenCalledWith('x2', 'vod');
+      expect(storageMock.getWatchlist).toHaveBeenCalledWith('x2', 'series');
+    });
+
+    it('omits only concealed collection counts and retains account-wide clearing', () => {
+      const concealed = vi.spyOn(ParentalControlService, 'isConcealed')
+        .mockImplementation(request => request.target.kind === 'vod-item'
+          && request.target.itemId === 'hidden1');
+      const hiddenResume = {
+        accountId: 'x2', kind: 'vod', itemId: 'hidden1', name: 'Title 1', poster: '',
+        ext: 'mp4', position: 100, duration: 600, updatedAt: 1,
+      };
+      const hiddenWatchlist = {
+        accountId: 'x2', kind: 'vod', itemId: 'hidden1', name: 'Title 1', poster: '',
+        categoryId: '1', addedAt: 1,
+      };
+      try {
+        storageMock.getResumeList.mockReturnValue([hiddenResume]);
+        storageMock.getWatchlist.mockImplementation((_accountId, kind) => kind === 'vod' ? [hiddenWatchlist] : []);
+        settings.render();
+        const resumeHint = () => container.querySelector('#continue-watching-count-hint')?.textContent;
+        const watchlistHint = () => container.querySelector('#watchlist-count-hint')?.textContent;
+        expect(resumeHint()).toContain('Account Bravo');
+        expect(resumeHint()).toContain('Clear saved playback progress for movies and series in "Account Bravo".');
+        expect(watchlistHint()).toContain('Account Bravo');
+        expect(resumeHint()).not.toMatch(/\(\d+\)/);
+        expect(watchlistHint()).not.toMatch(/\(\d+\)/);
+
+        storageMock.getResumeList.mockReturnValue([]);
+        click('#clear-continue-watching');
+        settings.handleAction('left');
+        settings.handleAction('select');
+        expect(storageMock.clearResumeList).toHaveBeenCalledExactlyOnceWith('x2');
+        expect(resumeHint()).toContain('(0)');
+        expect(watchlistHint()).not.toMatch(/\(\d+\)/);
+
+        click('#clear-watchlist');
+        settings.handleAction('left');
+        settings.handleAction('select');
+        expect(storageMock.clearWatchlist).toHaveBeenCalledExactlyOnceWith('x2');
+      } finally {
+        concealed.mockRestore();
+        storageMock.getResumeList.mockReturnValue([]);
+        storageMock.getWatchlist.mockReturnValue([]);
+      }
+    });
+
+    it('confirms clearing movie and episode progress for only the selected account', () => {
+      click('#clear-continue-watching');
+      expect(document.querySelector('.confirmation-title')?.textContent).toBe('Clear Continue Watching?');
+      expect(document.querySelector('.confirmation-message')?.textContent).toContain('Account Bravo');
+      expect(document.querySelector('.confirmation-message')?.textContent).toBe(
+        'Clear all saved playback progress for movies and series in "Account Bravo"? Watchlist is not affected.',
+      );
+      expect(storageMock.clearResumeList).not.toHaveBeenCalled();
+      settings.handleAction('left');
+      settings.handleAction('select');
+      expect(storageMock.clearResumeList).toHaveBeenCalledExactlyOnceWith('x2');
+      expect(storageMock.clearWatchlist).not.toHaveBeenCalled();
+      expect(toastMock.showToast).toHaveBeenCalledWith('Continue Watching cleared for "Account Bravo"');
+      expect(container.querySelector('#continue-watching-count-hint')?.textContent).toContain('(0)');
     });
 
     it('requires confirmation and clears only the selected account', () => {
@@ -1564,6 +1684,191 @@ describe('Settings.save', () => {
 });
 
 describe('Settings.handleAction', () => {
+  const hover = (el: Element) => el.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+  const unhover = (el: Element) => el.dispatchEvent(new CustomEvent('nav:unhover', { bubbles: true }));
+  const rings = () => Array.from(container.querySelectorAll('.focused'));
+  const key = (el: Element, init: KeyboardEventInit) =>
+    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+
+  it('tints the Advanced row of the focused control only', () => {
+    settings.render();
+    const trigger = container.querySelector('#number-entry-osd-timeout .dropdown-trigger')!;
+    hover(trigger);
+    expect(rings()).toEqual([trigger]);
+    expect(trigger.closest('.settings-advanced-row')?.classList.contains('is-current')).toBe(true);
+    unhover(trigger);
+    expect(rings()).toEqual([]);
+    expect(container.querySelector('.settings-advanced-row.is-current')).toBeNull();
+  });
+
+  it('only shows a field the pointer left on the next OK, without taking the caret', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#subdl-key')!;
+    hover(field);
+    unhover(field);
+    expect(rings()).toEqual([]);
+
+    expect(settings.handleAction('select')).toBe(true);
+    expect(rings()).toEqual([field]);
+    expect(document.activeElement).not.toBe(field);
+
+    settings.handleAction('select');
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('keeps the ring on a field with the caret and hands it to the hovered control after', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#subdl-key')!;
+    const other = container.querySelector<HTMLInputElement>('#assrt-key')!;
+    hover(field);
+    settings.handleAction('select');
+    expect(document.activeElement).toBe(field);
+
+    hover(other);
+    expect(rings()).toEqual([field]);
+    unhover(field);
+    expect(rings()).toEqual([field]);
+
+    field.blur();
+    expect(rings()).toEqual([other]);
+  });
+
+  it('lets Back and Up take the caret out of a field', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#assrt-key')!;
+    hover(field);
+    settings.handleAction('select');
+    expect(document.activeElement).toBe(field);
+
+    key(field, { key: 'Escape', keyCode: 27 });
+    expect(document.activeElement).not.toBe(field);
+    expect(rings()).toEqual([field]);
+
+    settings.handleAction('select');
+    key(field, { key: 'ArrowUp', keyCode: 38 });
+    expect(document.activeElement).not.toBe(field);
+    expect(rings()).toHaveLength(1);
+  });
+
+  it('takes the caret out of a field on a remote arrow that names only its key code', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#assrt-key')!;
+    hover(field);
+    settings.handleAction('select');
+    expect(document.activeElement).toBe(field);
+
+    expect(key(field, { keyCode: CONFIG.KEYS.UP })).toBe(false);
+    expect(document.activeElement).not.toBe(field);
+    expect(rings()).toHaveLength(1);
+
+    hover(field);
+    settings.handleAction('select');
+    expect(document.activeElement).toBe(field);
+    expect(key(field, { keyCode: CONFIG.KEYS.DOWN })).toBe(false);
+    expect(document.activeElement).not.toBe(field);
+    expect(rings()).toHaveLength(1);
+  });
+
+  it('takes the caret out of a field when something above Settings takes the keys', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#subdl-key')!;
+    hover(field);
+    settings.handleAction('select');
+    const elsewhere = Focus.register({ id: 'test.elsewhere', root: document.body });
+    Focus.push(elsewhere);
+    Focus.flush();
+    expect(document.activeElement).not.toBe(field);
+    Focus.pop(elsewhere);
+  });
+
+  it('does not preview the hovered swatch when Settings gives the keys away from a field', () => {
+    settings.render();
+    const field = container.querySelector<HTMLInputElement>('#subdl-key')!;
+    const swatch = container.querySelector<HTMLElement>('.theme-swatch[data-theme-id="arctic"]')!;
+    hover(field);
+    settings.handleAction('select');
+    const before = settings.focusScope.focusKey;
+    hover(swatch);
+    themeMock.previewTheme.mockClear();
+    const elsewhere = Focus.register({ id: 'test.elsewhere', root: document.body });
+    Focus.push(elsewhere);
+    Focus.flush();
+    expect(document.activeElement).not.toBe(field);
+    expect(themeMock.previewTheme).not.toHaveBeenCalledWith('arctic');
+    expect(settings.focusScope.focusKey).toBe(before);
+    Focus.pop(elsewhere);
+  });
+
+  it('leaves Up from the first category to the host', () => {
+    settings.render();
+    const general = container.querySelector('[data-settings-target="general"]');
+    expect(general?.classList.contains('focused')).toBe(true);
+    expect(settings.handleAction('up')).toBe(false);
+    expect(general?.classList.contains('focused')).toBe(true);
+  });
+
+  it('returns to the trigger of a dropdown that closed while Settings was away', () => {
+    settings.render();
+    click('#app-language [data-dropdown-trigger]');
+    settings.handleAction('down');
+    const option = container.querySelector('#app-language .dropdown-option.focused');
+    expect(option).not.toBeNull();
+
+    settings.render();
+    const trigger = container.querySelector('#app-language .dropdown-trigger');
+    expect(container.querySelector('#app-language')?.classList.contains('open')).toBe(false);
+    expect(rings()).toEqual([trigger]);
+    settings.handleAction('select');
+    expect(container.querySelector('#app-language')?.classList.contains('open')).toBe(true);
+  });
+
+  it('marks the category of the control it returns to', () => {
+    settings.render();
+    const control = container.querySelector<HTMLElement>('#settings-guide [data-focusable]')!;
+    hover(control);
+    expect(rings()).toEqual([control]);
+
+    settings.render();
+    expect(rings()).toEqual([container.querySelector('#settings-guide [data-focusable]')]);
+    expect(Array.from(container.querySelectorAll<HTMLElement>('.settings-nav-item.active'))
+      .map(item => item.dataset.settingsTarget)).toEqual(['guide']);
+  });
+
+  it('returns to the same playlist option after a playlist is added before it', () => {
+    state.playlists = [
+      { id: 'p1', name: 'Alpha', url: 'http://host/a' },
+      { id: 'p2', name: 'Bravo', url: 'http://host/b' },
+    ];
+    state.manualEpgSources = [{ url: 'http://host/a.xml', playlistIds: [] }];
+    settings.render();
+    hover(container.querySelector('[data-manual-epg-source] [data-playlist-id="p2"]')!);
+
+    state.playlists = [{ id: 'p0', name: 'Charlie', url: 'http://host/c' }, ...state.playlists];
+    settings.render();
+    expect(rings().map(el => (el as HTMLElement).dataset.playlistId)).toEqual(['p2']);
+  });
+
+  it('returns to the same EPG source button after another source is added', () => {
+    state.manualEpgSources = [
+      { url: 'http://host/a.xml', playlistIds: [] },
+      { url: 'http://host/b.xml', playlistIds: [] },
+    ];
+    settings.render();
+    const second = () => container.querySelectorAll('[data-manual-epg-source]')[1];
+    hover(second().querySelector('.remove-epg-source')!);
+
+    state.manualEpgSources = [...state.manualEpgSources, { url: 'http://host/c.xml', playlistIds: [] }];
+    settings.render();
+    expect(rings()).toEqual([second().querySelector('.remove-epg-source')]);
+  });
+
+  it('keeps Up inside an open dropdown', () => {
+    settings.render();
+    click('#app-language [data-dropdown-trigger]');
+    expect(settings.handleAction('up')).toBe(true);
+    expect(container.querySelector('#app-language')?.classList.contains('open')).toBe(true);
+  });
+
   it('dismisses an open dropdown and restores focus to its trigger', () => {
     settings.render();
     click('#app-language [data-dropdown-trigger]');
@@ -1648,30 +1953,24 @@ describe('Settings.handleAction', () => {
       .toBe(true);
   });
 
-  it('leaves category scrolling to the selected CSS profile', () => {
+  it('brings a picked category to the top of the pane and marks it', () => {
     settings.render();
+    const main = container.querySelector<HTMLElement>('.settings-scroll')!;
     const target = container.querySelector<HTMLElement>('#settings-subtitles')!;
-    target.scrollIntoView = vi.fn();
-    click('[data-settings-target="subtitles"]');
-    expect(target.scrollIntoView).toHaveBeenCalledWith({
-      block: 'start',
-      inline: 'nearest',
-      behavior: 'auto',
+    let scrolled = 0;
+    Object.defineProperty(main, 'scrollTop', {
+      configurable: true, get: () => scrolled, set: (v: number) => { scrolled = v; },
     });
-    expect(target.scrollIntoView).toHaveBeenCalledTimes(1);
-  });
+    Object.defineProperty(main, 'scrollHeight', { value: 2000, configurable: true });
+    Object.defineProperty(main, 'clientHeight', { value: 800, configurable: true });
+    main.getBoundingClientRect = () => ({ top: 0 } as DOMRect);
+    target.getBoundingClientRect = () => ({ top: 300 - scrolled } as DOMRect);
 
-  it('still delegates category scrolling to CSS in full mode', () => {
-    state.animationMode = 'full';
-    settings.render();
-    const target = container.querySelector<HTMLElement>('#settings-subtitles')!;
-    target.scrollIntoView = vi.fn();
     click('[data-settings-target="subtitles"]');
-    expect(target.scrollIntoView).toHaveBeenCalledWith({
-      block: 'start',
-      inline: 'nearest',
-      behavior: 'auto',
-    });
+
+    expect(target.getBoundingClientRect().top).toBe(main.getBoundingClientRect().top);
+    expect(container.querySelector('.settings-nav-item.active')?.getAttribute('data-settings-target'))
+      .toBe('subtitles');
   });
 
   it('updates the weak active category when content scrolling reaches the bottom', async () => {
@@ -1957,6 +2256,7 @@ describe('Settings listener lifecycle', () => {
     const c = document.createElement('div');
     document.body.appendChild(c);
     const spy = vi.spyOn(c, 'addEventListener');
+    settings.focusScope.dispose();
     const s = new Settings(c, vi.fn());
     s.render();
     s.render();
@@ -2338,7 +2638,7 @@ describe('Settings Xtream Live categories', () => {
     expect(picker()!.classList.contains('hidden')).toBe(false);
     picker()!.querySelector<HTMLElement>('[data-category-id="c2"]')!
       .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    settings.handleAction('yellow');
+    Focus.owner()!.handle('yellow');
 
     expect(settings.isPromptVisible).toBe(false);
     expect(storageMock.setLiveCategorySnapshot).toHaveBeenCalledWith('x1', {
@@ -2360,7 +2660,7 @@ describe('Settings Xtream Live categories', () => {
     await flush();
     picker()!.querySelector<HTMLElement>('[data-category-id="c2"]')!
       .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    settings.handleAction('yellow');
+    Focus.owner()!.handle('yellow');
     container.querySelector<HTMLInputElement>('#xtream-entries .xtream-username')!.value = 'u2';
 
     click('#save-settings');
@@ -2380,7 +2680,7 @@ describe('Settings Xtream Live categories', () => {
     container.querySelector<HTMLInputElement>('#xtream-entries .xtream-username')!.value = 'u2';
     click('#xtream-entries .xtream-live-categories');
     await flush();
-    settings.handleAction('yellow');
+    Focus.owner()!.handle('yellow');
     expect(storageMock.setLiveCategorySnapshot).not.toHaveBeenCalled();
     expect(snapshots.get('x1')).toEqual({ knownIds: ['c1'], announcedIds: [], counts: {} });
 
@@ -2399,7 +2699,7 @@ describe('Settings Xtream Live categories', () => {
     container.querySelector<HTMLInputElement>('#xtream-entries .xtream-username')!.value = 'u2';
     click('#xtream-entries .xtream-live-categories');
     await flush();
-    settings.handleAction('yellow');
+    Focus.owner()!.handle('yellow');
 
     click('#save-settings');
 

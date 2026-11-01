@@ -2,7 +2,7 @@ import { parseM3U } from '../src/parsers/m3u-parser';
 import { parseXMLTVWithStats, XMLTVStreamParser } from '../src/parsers/xmltv-parser';
 import { fetchAndParseXMLTV } from '../src/parsers/xmltv-loader';
 import { fetchMaybeGzipText } from '../src/utils/fetch-helper';
-import { isAppWorkerRunning } from '../src/workers/app-worker-client';
+import { appWorkerGeneration } from '../src/workers/app-worker-client';
 import { PlaylistService } from '../src/services/playlist-service';
 
 interface BenchmarkParseResult {
@@ -74,7 +74,7 @@ declare global {
 
 window.__IPTV_BENCHMARK__ = {
   workerRunning() {
-    return isAppWorkerRunning();
+    return appWorkerGeneration() !== null;
   },
   parseM3U(text) {
     const parsed = parseM3U(text, 'http://host/list.m3u');

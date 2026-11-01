@@ -52,4 +52,12 @@ describe('engine quirks', () => {
     applyEngineQuirks({ scrollEndPadding: false, noFlexGap: true }, root);
     expect(root.className.split(' ').sort()).toEqual(['keep', 'q-no-flex-gap', 'quirks-measured']);
   });
+
+  it('logs the measured quirks for tv.sh diag', () => {
+    const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+    applyEngineQuirks({ scrollEndPadding: true, noFlexGap: false }, document.documentElement);
+    expect(logs.mock.calls.map((args) => args.join(' '))).toEqual([
+      '[Quirks] Engine quirks measured event=engine.quirks.measured scrollEndPadding=1 noFlexGap=0',
+    ]);
+  });
 });

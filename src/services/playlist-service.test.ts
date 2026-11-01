@@ -24,6 +24,7 @@ const { storageMock, cacheMock, fetchTextMock } = vi.hoisted(() => ({
     getCachedPlaylist: vi.fn(),
     scheduleCachedPlaylist: vi.fn(),
     playlistCacheToken: vi.fn(() => ({ signature: 's1', generation: 0 })),
+    cacheRecordRef: vi.fn((_value: unknown): unknown => null),
   },
   fetchTextMock: vi.fn(),
 }));
@@ -1708,6 +1709,39 @@ describe('PlaylistService customization', () => {
       PlaylistService.applyCustomization();
     }
     expect(PlaylistService.channels.map(c => c.name)).toEqual(['Alpha', 'Bravo']);
+  });
+
+  it('maps visible channels to their playlist-cache record', async () => {
+    useRecord(record({ order: [KEY_B, KEY_A] }));
+    await PlaylistService.refresh();
+    expect(PlaylistService.getChannelCacheSource()).toBeNull();
+
+    const ref = { store: 'playlist-cache', key: 'k', timestamp: 1 };
+    cacheMock.cacheRecordRef.mockImplementation(value =>
+      value === PlaylistService.allChannels ? ref : null);
+    const concealing = vi.spyOn(ParentalControlService, 'concealing', 'get')
+      .mockReturnValue(true);
+    const concealed = vi.spyOn(ParentalControlService, 'isConcealed')
+      .mockImplementation(request => request.target.kind === 'live-channel'
+        && request.target.channelKey === KEY_A);
+    try {
+      PlaylistService.applyCustomization();
+      expect(PlaylistService.getChannelCacheSource()).toEqual({
+        record: ref,
+        length: 2,
+        selection: new Uint32Array([1]),
+      });
+      concealing.mockReturnValue(false);
+      PlaylistService.applyCustomization();
+      expect(PlaylistService.getChannelCacheSource()?.selection)
+        .toEqual(new Uint32Array([1, 0]));
+    } finally {
+      concealing.mockRestore();
+      concealed.mockRestore();
+      cacheMock.cacheRecordRef.mockReset();
+      cacheMock.cacheRecordRef.mockReturnValue(null);
+      PlaylistService.applyCustomization();
+    }
   });
 
   it('applies renames and group assignments and orders the groups', async () => {

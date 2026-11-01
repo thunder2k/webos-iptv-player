@@ -51,10 +51,10 @@ test.use({ timezoneId: 'UTC' });
 
 async function setup(
   page: Page,
-  options: { enabled?: boolean; stub?: boolean; epg?: boolean | string; now?: string } = {},
+  options: { enabled?: boolean; stub?: boolean; epg?: boolean | string; now?: string; playlist?: string } = {},
 ): Promise<void> {
   await page.clock.setFixedTime(new Date(options.now || '2026-09-15T12:00:00Z'));
-  await routePlaylist(page, CHANNELS);
+  await routePlaylist(page, options.playlist ?? CHANNELS);
   await routeLiveManifest(page);
   await page.route('http://host/guide.xml', route => route.fulfill({
     contentType: 'application/xml',
@@ -109,7 +109,8 @@ async function setup(
     }, true);
   }, { enabled: options.enabled, stub: options.stub !== false });
   await page.goto('/');
-  await expect(page.locator(ROW)).toHaveCount(2);
+  if (options.playlist) await expect(page.locator(ROW).first()).toBeVisible();
+  else await expect(page.locator(ROW)).toHaveCount(2);
 }
 
 async function selectFirst(page: Page): Promise<void> {
@@ -398,6 +399,9 @@ test('D-pad enters controls and returns to the selected row without stopping', a
   await setup(page, { enabled: true });
   await selectFirst(page);
   await page.mouse.move(0, 0);
+  // The pointer left the list, so the first key only shows the focused row.
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(`${ROW}.focused`)).toContainText('ch1');
   await page.keyboard.press('ArrowRight');
   await expect(page.locator(MUTE)).toHaveClass(/focused/);
   await expect(page.locator(`${PANEL} .live-preview-legend`)).toContainText('Mute');
@@ -430,6 +434,87 @@ test('D-pad enters controls and returns to the selected row without stopping', a
   await expect(page.locator(`${ROW}.focused`)).toContainText('ch1');
 });
 
+test('CH- from the controls after the pointer left moves the list, not just the ring', async ({ page }) => {
+  await setup(page, { enabled: true });
+  await selectFirst(page);
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(MUTE)).toHaveClass(/focused/);
+
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(MUTE)).not.toHaveClass(/focused/);
+  await expect(page.locator(`${ROW}.focused`)).toHaveCount(1);
+});
+
+function stableChannelKey(url: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < url.length; i++) {
+    hash ^= url.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+// Recently Watched has no virtual step, so CH- falls back to a spatial move.
+test('CH- from the controls in Recently Watched moves the list', async ({ page }) => {
+  await page.addInitScript((keys) => {
+    localStorage.setItem('iptv_recently_watched_live', JSON.stringify(
+      keys.map((channelKey, i) => ({ channelKey, updatedAt: Date.now() - i * 1000 })),
+    ));
+  }, ['http://host/ch1.m3u8', 'http://host/ch2.m3u8'].map(stableChannelKey));
+  await setup(page, { enabled: true });
+  await page.locator('[data-group="builtin:recently-watched"]').click();
+  const rows = page.locator('#channel-browser .channel-main .recent-item');
+  await expect(rows).toHaveCount(2);
+  await rows.first().click();
+  await expect(page.locator(`${PANEL} .live-preview-channel`)).toHaveText('ch1');
+  await page.mouse.move(0, 0);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(MUTE)).toHaveClass(/focused/);
+
+  await page.keyboard.press('PageDown');
+  await expect(page.locator(MUTE)).not.toHaveClass(/focused/);
+  await expect(rows.nth(1)).toHaveClass(/\bfocused\b/);
+  await expect(rows.first()).not.toHaveClass(/\bfocused\b/);
+});
+
+test('Left from the controls after the list scrolls resumes at a row in view', async ({ page }) => {
+  const events: string[] = [];
+  page.on('console', (msg) => events.push(msg.text()));
+  const lines = ['#EXTM3U'];
+  for (let i = 1; i <= 300; i++) {
+    lines.push(`#EXTINF:-1 tvg-id="ch${String(i)}" group-title="Group 1",ch${String(i)}`,
+      `http://host/ch${String(i)}.m3u8`);
+  }
+  await setup(page, { enabled: true, playlist: lines.join('\n') });
+  await selectFirst(page);
+  await page.mouse.move(0, 0);
+  // The pointer left the list, so the first key only shows the focused row.
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(`${ROW}.focused`)).toContainText('ch1');
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(MUTE)).toHaveClass(/focused/);
+
+  // The wheel scrolls the list under the pointer while the controls keep focus.
+  const main = page.locator('#channel-browser .channel-main');
+  await main.evaluate((el) => { el.scrollTop = 3000; });
+  await expect(main.locator('[data-list-position="0"]')).toHaveCount(0);
+
+  await page.keyboard.press('ArrowLeft');
+  const focused = page.locator(`${ROW}.focused`);
+  await expect(focused).toHaveCount(1);
+  const view = await main.boundingBox();
+  const row = await focused.boundingBox();
+  if (!view || !row) throw new Error('no layout');
+  expect(row.y).toBeGreaterThanOrEqual(view.y - 1);
+  expect(row.y + row.height).toBeLessThanOrEqual(view.y + view.height + 1);
+  expect(await main.evaluate((el) => el.scrollTop)).toBeGreaterThan(2000);
+  expect(events.some((text) => /event=nav\.focus\.repaired reason=detached scope=live\.channels/.test(text)
+    && /\blist=channel target=nearest\b/.test(text))).toBe(true);
+});
+
 test('entering channel edit mode closes the active preview', async ({ page }) => {
   await setup(page, { enabled: true });
   await selectFirst(page);
@@ -460,6 +545,9 @@ test('preview controls stay transparent until focused and reuse focus tokens', a
   await setup(page, { enabled: true });
   await selectFirst(page);
   await page.mouse.move(0, 0);
+  // The pointer left the list, so the first key only shows the focused row.
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator(`${ROW}.focused`)).toContainText('ch1');
   await page.keyboard.press('ArrowRight');
   await expect(page.locator(MUTE)).toHaveClass(/focused/);
   await expect.poll(() => page.locator(MUTE).evaluate(element =>

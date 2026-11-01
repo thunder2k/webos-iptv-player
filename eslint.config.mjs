@@ -1,8 +1,10 @@
 import compat from 'eslint-plugin-compat';
 import tsParser from '@typescript-eslint/parser';
 import { ALLOWLIST, DENYLIST } from './scripts/compat-gate.mjs';
+import { focusRules } from './scripts/eslint-focus-rules.mjs';
 
 const entryByKind = new Map(DENYLIST.map((entry) => [entry.kind, entry]));
+const callOptions = DENYLIST.filter((entry) => entry.kind === 'call-option');
 const polyfilled = new Set(
   ALLOWLIST.filter((entry) => entry.reason === 'polyfilled').map((entry) => entry.name),
 );
@@ -37,16 +39,24 @@ const unsupportedPatterns = {
       },
       CallExpression(node) {
         const name = expressionName(node.callee);
-        if (name === 'postMessage' && objectProperty(node.arguments[1], 'transfer')) {
-          context.report({ node, message: entryByKind.get('postmessage-option').message });
-        }
-        if (name === 'addEventListener' && objectProperty(node.arguments[2], 'signal')) {
-          context.report({ node, message: entryByKind.get('listener-option').message });
+        for (const option of callOptions) {
+          if (name === option.call && objectProperty(node.arguments[option.arg], option.property)) {
+            context.report({ node, message: option.message });
+          }
         }
       },
     };
   },
 };
+
+// Focus handling lives in src/navigation/. The one inline disable left is a
+// pointer listener that is not about focus, and it says why; an unused
+// disable is an error, so deleting a site must delete its comment.
+export const FOCUS_RULE_FILES = {
+  files: ['src/**/*.ts'],
+  ignores: ['src/**/*.test.ts', 'src/test/**', 'src/navigation/**'],
+};
+export const FOCUS_RULES = ['no-ring-writer', 'no-raw-pointer-listener', 'no-scroll-into-view'];
 
 // webOS 4 ships Chromium 53. esbuild down-levels post-53 *syntax* (optional
 // chaining, etc.) but it does NOT polyfill missing *APIs*, which would silently
@@ -96,6 +106,12 @@ export default [
           selector: `CallExpression > MemberExpression[property.name='${e.name}']`,
           message: e.message,
         })),
+        {
+          // A raw class write can't see a ring FocusRing parked, so a later
+          // return of the keys would show two (see src/navigation/focus-ring.ts).
+          selector: "CallExpression[callee.object.property.name='classList'][arguments.0.value='focused']",
+          message: "Request the focus ring through a focus scope (navigation/focus-scope).",
+        },
       ],
       'webos-compat/unsupported-patterns': 'error',
     },
@@ -119,5 +135,11 @@ export default [
       'compat/compat': 'off',
       'no-restricted-syntax': 'off',
     },
+  },
+  {
+    ...FOCUS_RULE_FILES,
+    plugins: { focus: { rules: focusRules } },
+    linterOptions: { reportUnusedDisableDirectives: 'error' },
+    rules: Object.fromEntries(FOCUS_RULES.map((rule) => [`focus/${rule}`, 'error'])),
   },
 ];

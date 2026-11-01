@@ -127,9 +127,17 @@ a new term after review, add a row here.
 | Item that differs from its group | Set separately | 单独设置 |
 | Group with some items locked | Partly locked | 部分锁定 |
 | Xtream live category filter | Live categories | 直播分类 |
+| Catalog sort field | Sort by | 排序方式 |
+| Server catalog order | Default | 默认 |
+| Catalog sort fields | Date added / Rating / Year | 加入日期 / 评分 / 年份 |
+| Name sort direction | A–Z / Z–A | A–Z / Z–A |
+| Date added / Year sort direction | Newest / Oldest | 最新 / 最早 |
+| Rating sort direction | Highest / Lowest | 最高 / 最低 |
 
 Rejected: 片单 (watchlist), 正在播放 for NOW, 节目单 (guide),
 全局频道 / "Global" for all channels, "programme",
+Ascending / Descending / 升序 / 降序 / Asc / Desc and 最旧 (sort
+direction),
 "Exception" / 例外 (set separately), "Mixed" / 混合 (partly locked).
 
 ## Checks

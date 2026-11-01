@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import { join, extname } from 'path';
 import { LEGACY_HEADER, readLegacyAsset } from './chromium-53-simulation.mjs';
 
-const PORT = 3000;
+const PORT = Number(process.env.PREVIEW_PORT) || 3000;
 const DIR = 'dist';
 
 const MIME = {

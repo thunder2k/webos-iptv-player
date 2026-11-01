@@ -14,6 +14,23 @@ const attachmentUrls = Array.from(new Set(
   markdown.match(/https:\/\/github\.com\/user-attachments\/assets\/[a-z0-9-]+/gi) || [],
 ));
 
+// Name each screenshot after its alt text so its published URL stays the same
+// when the image behind it is replaced; external listings link to these URLs.
+const screenshotNames = new Map();
+for (const [, alt, id] of markdown.matchAll(
+  /!\[([^\]]*)\]\(https:\/\/github\.com\/user-attachments\/assets\/([a-z0-9-]+)\)/gi,
+)) {
+  const name = alt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  if (name && !screenshotNames.has(id)) screenshotNames.set(id, name);
+}
+const usedNames = new Map();
+for (const [id, name] of screenshotNames) {
+  if (usedNames.has(name)) {
+    throw new Error(`Screenshots ${usedNames.get(name)} and ${id} share the name "${name}"`);
+  }
+  usedNames.set(name, id);
+}
+
 const response = await fetch('https://api.github.com/markdown', {
   method: 'POST',
   headers: {
@@ -75,7 +92,7 @@ for (const attachmentUrl of attachmentUrls) {
   }
 
   const extension = downloadUrl.match(new RegExp(`${id}\\.([a-z0-9]+)(?:\\?|&|$)`, 'i'))?.[1] || 'png';
-  const relativePath = `screenshots/${id}.${extension}`;
+  const relativePath = `screenshots/${screenshotNames.get(id) || id}.${extension}`;
   const publishedUrl = `${pagesBaseUrl}${relativePath}`;
   await writeFile(`${outputDirectory}/${relativePath}`, Buffer.from(await imageResponse.arrayBuffer()));
 

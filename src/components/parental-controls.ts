@@ -18,7 +18,10 @@ import { html, raw, type Safe } from '../utils/dom';
 import { morph } from '../utils/morph';
 import { VirtualList } from '../utils/virtual-list';
 import { VirtualScrollGuard } from '../utils/virtual-scroll';
-import { SpatialNav } from '../navigation/spatial-nav';
+import { SpatialNav, isFocusMove } from '../navigation/spatial-nav';
+import { Focus, Tier, type FocusScope, type Via } from '../navigation/focus-scope';
+import { InputMode } from '../navigation/input-mode';
+import { isHovered } from '../navigation/focus-ring';
 import { StorageService } from '../services/storage-service';
 import { PlaylistService } from '../services/playlist-service';
 import { channelKey, groupDisplayLabel } from '../utils/channel';
@@ -53,6 +56,12 @@ const LIST_OVERSCAN = 8;
 const FALLBACK_LIST_HEIGHT = 600;
 
 type ListKind = 'group' | 'item';
+// The on/off switch is shared markup without a key of its own.
+const ENABLED_KEY = 'parental-enabled';
+
+function rowKey(kind: ListKind, key: string): string {
+  return `${kind}|${key}`;
+}
 
 type SourceKind = 'live' | 'vod' | 'series';
 
@@ -114,7 +123,13 @@ function isAdultChannel(channel: Channel): boolean {
 }
 
 export class ParentalControls {
+  readonly focusScope: FocusScope;
+  private readonly accountMenuScope: FocusScope;
   private nav: SpatialNav;
+  // Only a key moves the current group; the pointer only highlights a row.
+  private via: Via = 'key';
+  // The pointer left the focused control: the next key only shows it again.
+  private concealed = false;
   private sources: SourceEntry[] = [];
   private groups: GroupEntry[] = [];
   private items: ItemEntry[] = [];
@@ -128,7 +143,6 @@ export class ParentalControls {
   // The current group survives focus leaving the column (Magic Remote pointer
   // on the legend), so the blue key and the item column always have a target.
   private groupIndex = -1;
-  private hovering = false;
   private groupsLoading = false;
   private itemsLoading = false;
   private itemsGroupKey: string | null = null;
@@ -140,15 +154,13 @@ export class ParentalControls {
   // only the one whose items are loaded.
   private memberGroups = new Map<string, string>();
   private memberGroupsRevision = 0;
-  // A wheel scroll can unmount the focused row; D-pad resumes from here.
-  private detachedRow: { kind: ListKind; index: number; entries: unknown[] } | null = null;
   private groupSummaryCache: (Omit<RuleSummary, 'exceptions'> & { inputs: unknown[] }) | null = null;
   private exceptionCache: { inputs: unknown[]; exceptions: number } | null = null;
   private lockedCounts = new WeakMap<ItemEntry[], { revision: number; locked: number }>();
   private groupsByKeyFor: GroupEntry[] | null = null;
   private groupsByKey = new Map<string, GroupEntry>();
   private tab: 'rules' | 'options' = 'rules';
-  private readonly confirmationPrompt = new ConfirmationPrompt();
+  private readonly confirmationPrompt = new ConfirmationPrompt('prompt.parental');
   private readonly groupVirtualizer = new VirtualList({
     itemSize: ROW_STRIDE,
     overscan: LIST_OVERSCAN,
@@ -168,24 +180,53 @@ export class ParentalControls {
     private onChangePin: (done: () => void) => void = () => {},
     private onCreatePin: (done: () => void) => void = () => {},
   ) {
-    // Pointer hover only highlights a row; it must not change the current group,
-    // or reaching the footer hints would select every row the pointer crosses.
-    this.container.addEventListener('nav:hover', () => { this.hovering = true; }, true);
-    this.nav = new SpatialNav(container, el => this.onFocusChange(el));
-    this.container.addEventListener('nav:hover', () => { this.hovering = false; });
+    this.nav = new SpatialNav(container, el => this.onFocusChange(el), { follow: false });
+    this.focusScope = Focus.register({
+      id: 'view.parental-controls',
+      root: container,
+      defaultKey: () => this.defaultKey(),
+      resolve: key => this.resolveKey(key),
+      // A row a wheel scroll unmounted is still focused; a key brings it back.
+      has: key => this.rowOf(key) !== null,
+      reveal: key => this.revealRow(key),
+    });
+    this.accountMenuScope = Focus.register({
+      id: 'parental.account_menu',
+      root: () => this.container.querySelector<HTMLElement>('.parental-account-slot'),
+      restrict: 'self-only',
+      tier: Tier.overlay,
+      onAction: action => this.handleAction(action),
+    });
+    // Pointer hover only highlights a control; it must not change the current
+    // group, or reaching the footer hints would select every row it crosses.
+    this.container.addEventListener('nav:hover', (event: Event) => {
+      const el = event.target as HTMLElement;
+      if (el.hasAttribute('data-focusable')) this.pick(el, 'pointer');
+    });
+    this.container.addEventListener('nav:unhover', (event: Event) => {
+      if (event.target !== this.focusedElement()) return;
+      this.concealed = true;
+      this.focusScope.conceal();
+      Focus.flush();
+    });
     this.container.setAttribute('data-self-activate', '');
     this.container.addEventListener('click', (event: MouseEvent) => {
       const clicked = event.target as HTMLElement;
       // The account switcher handles its own slot, and a click elsewhere
       // only dismisses its open menu.
-      if (this.switcher?.menuOpen || clicked.closest('.parental-account-slot')) return;
+      if (this.switcher?.menuOpen) return;
+      if (clicked.closest('.parental-account-slot')) {
+        // Runs before the switcher's own listener opens the menu.
+        if (clicked.closest('.account-avatar')) this.hideAvatarRing();
+        return;
+      }
       const target = clicked.closest<HTMLElement>('[data-focusable]');
       if (!target) return;
       const group = target.dataset.parentalGroup;
       const selecting = group !== undefined && Number(group) !== this.groupIndex;
       // A click is a deliberate choice, so its items load without the D-pad debounce.
       if (selecting) this.setCurrentGroup(Number(group), true);
-      this.nav.focus(target);
+      this.pick(target, 'pointer');
       if (!selecting) this.activate(target);
     });
     this.container.addEventListener('scroll', (event: Event) => {
@@ -223,6 +264,9 @@ export class ParentalControls {
     this.switcher?.closeMenu();
     this.focusArea = 'group';
     this.tab = 'rules';
+    this.nav.focused = null;
+    this.concealed = false;
+    this.focusScope.focus(null, 'resume');
     this.groups = [];
     this.resetItems();
     const index = this.sourceIndexFor(this.kind);
@@ -260,8 +304,17 @@ export class ParentalControls {
       this.onBack();
       return;
     }
-    if (action === 'left' || action === 'right' || action === 'select') {
-      if (!this.nav.focused) this.restoreDetachedRow();
+    if (isFocusMove(action) || action === 'select') {
+      this.via = 'key';
+      // A row scrolled out of the DOM comes back first, so the key acts on it.
+      this.syncNav();
+      // After the pointer left, the first key only shows where focus is.
+      if (this.concealed && this.nav.focused) {
+        this.concealed = false;
+        this.focusScope.focus(this.focusScope.focusKey, 'key');
+        Focus.flush();
+        return;
+      }
     }
     if (action === 'left' || action === 'right') {
       if (!this.hopColumn(action)) this.nav.move(action);
@@ -509,17 +562,113 @@ export class ParentalControls {
   }
 
   private onFocusChange(el: HTMLElement | null): void {
-    this.switcher?.setFocused(!!el?.classList.contains('parental-account-slot'));
-    const data = el?.dataset;
-    const area = !data ? null
-      : data.parentalItem !== undefined ? 'item'
-        : data.parentalGroup !== undefined || data.parentalSuggest !== undefined
-          || data.parentalSource !== undefined ? 'group' : null;
+    if (!el) return;
+    const data = el.dataset;
+    const area = data.parentalItem !== undefined ? 'item'
+      : data.parentalGroup !== undefined || data.parentalSuggest !== undefined
+        || data.parentalSource !== undefined ? 'group' : null;
     const areaChanged = area !== null && area !== this.focusArea;
     if (area) this.focusArea = area;
-    const index = this.hovering ? undefined : data?.parentalGroup;
+    const index = this.via === 'key' ? data.parentalGroup : undefined;
     const rendered = index !== undefined && this.setCurrentGroup(Number(index));
     if (areaChanged && !rendered) this.render();
+    const key = this.keyOf(el);
+    // Only the owner of the keys shows its focus; otherwise it is noted for
+    // when the keys come back.
+    if (Focus.owner() !== this.focusScope) {
+      this.focusScope.track(key);
+      return;
+    }
+    this.concealed = false;
+    this.focusScope.focus(key, this.via);
+    Focus.flush();
+  }
+
+  private pick(el: HTMLElement, via: Via): void {
+    this.via = via;
+    try {
+      this.nav.focus(el);
+    } finally {
+      this.via = 'key';
+    }
+  }
+
+  // A category and a title can share an id, so row keys name their list.
+  private keyOf(el: HTMLElement): string | null {
+    const key = el.dataset.key;
+    if (key === undefined) return el.classList.contains('source-toggle') ? ENABLED_KEY : null;
+    if (el.dataset.parentalGroup !== undefined) return rowKey('group', key);
+    return el.dataset.parentalItem !== undefined ? rowKey('item', key) : key;
+  }
+
+  // The focusable element a key names; the account slot stands for its avatar.
+  private findKey(key: string): HTMLElement | null {
+    if (key === ENABLED_KEY) return this.container.querySelector<HTMLElement>('.source-toggle');
+    const row = /^(group|item)\|(.*)$/.exec(key);
+    const selector = row ? `[data-parental-${row[1]}]` : '[data-key]';
+    const name = row ? row[2] : key;
+    for (const el of Array.from(this.container.querySelectorAll<HTMLElement>(selector))) {
+      if (el.dataset.key === name) return el.hasAttribute('data-focusable') ? el : null;
+    }
+    return null;
+  }
+
+  private resolveKey(key: string): HTMLElement | null {
+    const el = this.findKey(key);
+    if (el?.dataset.parentalAvatar === undefined) return el;
+    return el.querySelector<HTMLElement>('.account-avatar');
+  }
+
+  // Hidden before the menu renders: hiding clears every ring in the view,
+  // the menu's own highlight included.
+  private hideAvatarRing(): void {
+    this.focusScope.conceal();
+    Focus.flush();
+  }
+
+  private focusedElement(): HTMLElement | null {
+    const key = this.focusScope.focusKey;
+    return key !== null ? this.findKey(key) : null;
+  }
+
+  private defaultKey(): string | null {
+    if (this.tab === 'rules') {
+      const group = this.groups[this.groupIndex] ?? this.groups[0];
+      if (group && this.findKey(rowKey('group', group.key))) return rowKey('group', group.key);
+    }
+    return `parental-tab:${this.tab}`;
+  }
+
+  // The list and index of a row key, mounted or not.
+  private rowOf(key: string): { kind: ListKind; index: number } | null {
+    const row = /^(group|item)\|(.*)$/.exec(key);
+    if (!row || this.tab !== 'rules') return null;
+    const kind = row[1] as ListKind;
+    const index = (kind === 'group' ? this.groups : this.items).findIndex(entry => entry.key === row[2]);
+    return index >= 0 ? { kind, index } : null;
+  }
+
+  private revealRow(key: string): boolean {
+    const row = this.rowOf(key);
+    if (!row || !this.virtualizer(row.kind).ensureVisible(row.index, this.listViewport(row.kind))) {
+      return false;
+    }
+    this.render();
+    return true;
+  }
+
+  // Points the nav at the focused control, mounting a row scrolled out of the DOM.
+  private syncNav(): void {
+    const key = this.focusScope.focusKey;
+    if (key === null) return;
+    let el = this.findKey(key);
+    const row = el ? null : this.rowOf(key);
+    if (row) {
+      this.virtualizer(row.kind).ensureVisible(row.index, this.listViewport(row.kind));
+      this.render();
+      el = this.findKey(key);
+    }
+    if (el) this.nav.focused = el;
   }
 
   private setCurrentGroup(index: number, immediate = false): boolean {
@@ -649,6 +798,7 @@ export class ParentalControls {
       return;
     }
     if (el.dataset.parentalAvatar !== undefined) {
+      this.hideAvatarRing();
       this.switcher?.openMenu();
       return;
     }
@@ -725,7 +875,8 @@ export class ParentalControls {
       this.setMemberGroup(ruleKey(item), group.key);
       this.render();
       // A keyed morph keeps the row; a late refocus would undo keys pressed since.
-      if (this.nav.focused?.dataset.key !== item.key) this.focusKey(item.key);
+      const key = rowKey('item', item.key);
+      if (!this.nav.focused || this.keyOf(this.nav.focused) !== key) this.focusKey(key);
       return;
     }
   }
@@ -908,7 +1059,6 @@ export class ParentalControls {
   }
 
   private render(): void {
-    const focusedRow = this.focusedRow();
     const currentGroup = this.groups[this.groupIndex];
     const tabs: Array<{ id: 'rules' | 'options'; label: string }> = [
       { id: 'rules', label: t('parental.tabLocks') },
@@ -949,10 +1099,6 @@ export class ParentalControls {
     `);
     this.syncListScroll('group');
     this.syncListScroll('item');
-    // morph() resets `class` from the template, dropping the nav highlight.
-    this.nav.clearDetachedFocus();
-    if (focusedRow && !this.nav.focused) this.detachedRow = focusedRow;
-    if (this.nav.focused) this.nav.focused.classList.add('focused');
     this.mountAccount();
   }
 
@@ -977,12 +1123,25 @@ export class ParentalControls {
     const slot = this.container.querySelector<HTMLElement>('.parental-account-slot');
     if (!slot) return;
     if (!this.switcher) {
-      this.switcher = new AccountSwitcher(slot, { onSelect: id => this.selectAccount(id) });
+      this.switcher = new AccountSwitcher(slot, {
+        onSelect: id => this.selectAccount(id),
+        // The open menu owns the keys and draws its own highlight; the
+        // avatar hid its ring before the menu rendered and stays hidden.
+        onMenuOpen: () => Focus.push(this.accountMenuScope),
+        onMenuClose: (reason, hit) => {
+          Focus.pop(this.accountMenuScope);
+          const avatar = reason === 'toggle' ? hit?.closest('.account-avatar') : null;
+          // Closed by the pointer, the ring waits for the next key, unless the
+          // pointer still rests on the avatar it clicked.
+          if (InputMode.current === 'keys') this.focusScope.focus(this.focusScope.focusKey, 'key');
+          else if (avatar && isHovered(avatar)) this.pick(slot, 'pointer');
+          else this.concealed = true;
+        },
+      });
       this.switcher.init();
     }
     const current = this.tab === 'rules' ? this.currentAccount() : undefined;
     this.switcher.setAccounts(current ? this.xtreamAccounts() : [], current?.id ?? '');
-    this.switcher.setFocused(!!current && this.nav.focused === slot);
   }
 
   private renderRules(currentGroup: GroupEntry | undefined): Safe {
@@ -1194,8 +1353,7 @@ export class ParentalControls {
   // Up/Down step by index, since the neighboring row may not be mounted yet.
   private moveInList(delta: number): boolean {
     const data = this.nav.focused?.dataset;
-    if (!data) return this.resumeDetachedRow(delta);
-    this.detachedRow = null;
+    if (!data) return false;
     if (data.parentalSuggest !== undefined) {
       if (delta < 0 || !this.groups.length) return false;
       this.focusRow('group', 0);
@@ -1220,48 +1378,6 @@ export class ParentalControls {
     if (index < 0 || index >= count) return false;
     this.focusRow(kind, index);
     return true;
-  }
-
-  private focusedRow(): { kind: ListKind; index: number; entries: unknown[] } | null {
-    const data = this.nav.focused?.dataset;
-    if (data?.parentalGroup !== undefined) {
-      return { kind: 'group', index: Number(data.parentalGroup), entries: this.groups };
-    }
-    if (data?.parentalItem !== undefined) {
-      return { kind: 'item', index: Number(data.parentalItem), entries: this.items };
-    }
-    return null;
-  }
-
-  private takeDetachedRow(): { kind: ListKind; index: number } | null {
-    const row = this.detachedRow;
-    this.detachedRow = null;
-    if (!row || row.entries !== (row.kind === 'group' ? this.groups : this.items)) return null;
-    return row.index < row.entries.length ? row : null;
-  }
-
-  private resumeDetachedRow(delta: number): boolean {
-    const row = this.takeDetachedRow();
-    if (!row) return false;
-    if (this.stepInList(row.kind, row.index, delta)) return true;
-    // At a list end, remount the row so nav.move() leaves the list from it.
-    this.refocusRow(row.kind, row.index);
-    return false;
-  }
-
-  private restoreDetachedRow(): void {
-    const row = this.takeDetachedRow();
-    if (row) this.refocusRow(row.kind, row.index);
-  }
-
-  // Restoring focus isn't a D-pad choice, so it mustn't select the group.
-  private refocusRow(kind: ListKind, index: number): void {
-    this.hovering = true;
-    try {
-      this.focusRow(kind, index);
-    } finally {
-      this.hovering = false;
-    }
   }
 
   private focusRow(kind: ListKind, index: number): void {
@@ -1316,9 +1432,7 @@ export class ParentalControls {
 
   private focusKey(key: string): void {
     setTimeout(() => {
-      const target = Array.from(
-        this.container.querySelectorAll<HTMLElement>('[data-key]'),
-      ).find(element => element.dataset.key === key);
+      const target = this.findKey(key);
       if (target) this.nav.focus(target);
     }, 0);
   }

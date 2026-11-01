@@ -98,7 +98,7 @@ const dirs = [];
 
 // Fake ssh prompts until a control connection exists, like real ssh:
 // a key passphrase when -i is given, otherwise a login password.
-function fakeBin({ auth, secret }) {
+function fakeBin({ auth, secret, refused = false }) {
   const dir = mkdtempSync(join(tmpdir(), 'tv-sh-test-'));
   dirs.push(dir);
   const details = auth === 'key'
@@ -113,6 +113,7 @@ function fakeBin({ auth, secret }) {
   writeFileSync(join(dir, 'ares-setup-device'),
     `#!/bin/sh\necho '${JSON.stringify(device)}'\n`);
   writeFileSync(join(dir, 'ssh'), `#!/bin/sh
+${refused ? 'echo "ssh: connect to host 127.0.0.1 port 9922: Connection refused" >&2; exit 255' : ''}
 master="${dir}/master"
 if [ ! -f "$master" ]; then
   case " $* " in
@@ -156,6 +157,16 @@ describe.skipIf(!hasExpect)('tv.sh run', () => {
     const result = run(dir);
     expect(result.status).not.toBe(0);
     expect(result.stdout).toBe('');
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+    expect(result.stderr).toContain('tv.sh: ssh authentication failed');
+  });
+
+  it('reports a refused SSH port as Developer Mode being off', () => {
+    const dir = fakeBin({ auth: 'key', secret: 'correct', refused: true });
+    const result = run(dir);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('refused SSH on port 9922; Developer Mode may be off');
+    expect(result.stderr).not.toContain('authentication failed');
     expect(existsSync(join(dir, 'ran'))).toBe(false);
   });
 });

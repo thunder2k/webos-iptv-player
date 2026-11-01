@@ -1,3 +1,4 @@
+import { appendFileSync } from 'node:fs';
 import { test as base, expect, type Page } from '@playwright/test';
 import { postTargetApis, removeApis } from '../scripts/chromium-53-simulation.mjs';
 
@@ -89,6 +90,46 @@ export async function neuterVideo(page: Page): Promise<void> {
   });
 }
 
+export interface PlayerKeyState {
+  osdBefore: boolean;
+  osd: boolean;
+  message: boolean;
+  player: boolean;
+  menu: boolean;
+  paused: boolean;
+  currentTime: number;
+}
+
+// Press remote keys and read the player back in the same page task, so the OSD's
+// auto-hide or a stream retry can't land in between.
+export async function pressAndReadPlayer(page: Page, keyCodes: number[]): Promise<PlayerKeyState> {
+  return (await pressStepsAndReadPlayer(page, [keyCodes]))[0];
+}
+
+// Each step's keys and the read after them, all in one page task: a fake
+// stream's retry would otherwise resume a paused element between steps.
+export async function pressStepsAndReadPlayer(page: Page, steps: number[][]): Promise<PlayerKeyState[]> {
+  return page.evaluate((keySteps) => {
+    const shown = (id: string) => document.getElementById(id)!.getClientRects().length > 0;
+    const video = document.getElementById('video-player') as HTMLVideoElement;
+    return keySteps.map((codes) => {
+      const osdBefore = shown('player-osd');
+      for (const keyCode of codes) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { keyCode, bubbles: true }));
+      }
+      return {
+        osdBefore,
+        osd: shown('player-osd'),
+        message: document.querySelector('#player-osd .osd-message') !== null,
+        player: shown('view-player'),
+        menu: document.getElementById('player-menu')!.classList.contains('visible'),
+        paused: video.paused,
+        currentTime: video.currentTime,
+      };
+    });
+  }, steps);
+}
+
 /** Pre-seed one configured URL playlist so the app boots into the channel list. */
 export async function seedPlaylist(page: Page, url = PLAYLIST_URL): Promise<void> {
   await page.addInitScript((u) => {
@@ -159,9 +200,124 @@ export const test = base.extend({
       await page.addInitScript(removeApis, POST_TARGET_APIS);
     }
     await stubUploadService(page);
+    const ringFailures = await auditRings(page, process.env.RING_AUDIT,
+      `${testInfo.project.name} › ${testInfo.titlePath.slice(1).join(' › ')}`);
     await use(page);
+    if (!page.isClosed()) {
+      await page.waitForFunction(() => !(window as { __ringPending?: number }).__ringPending,
+        null, { timeout: 3000 }).catch(() => undefined);
+    }
+    // FocusRing lets only the surface that owns the keys show a ring.
+    expect(ringFailures, 'a key left the focus ring on the wrong surface').toEqual([]);
   },
 });
+
+// Every key the page sees (pressed, typed, or dispatched) and every wheel
+// step is checked once it has rendered: more than one visible focus ring, or
+// an open prompt without the ring, fails the test. RING_AUDIT=<file> also
+// records screens with no ring while the remote drives focus (some are by
+// design, so those only report).
+async function auditRings(page: Page, file: string | undefined, title: string): Promise<string[]> {
+  const failures: string[] = [];
+  await page.exposeFunction('__ringAudit', (entry: string) => {
+    const report = JSON.parse(entry) as { kind: string; input: string; rings: string[] };
+    if (report.kind !== 'none') failures.push(`${report.kind} after ${report.input}: ${report.rings.join(' + ')}`);
+    if (file) appendFileSync(file, `${JSON.stringify({ title, ...report })}\n`);
+  });
+  await page.addInitScript(installRingAudit, !!file);
+  return failures;
+}
+
+function installRingAudit(recordNone: boolean): void {
+  const w = window as unknown as { __ringAudit?: (entry: string) => void; __ringPending?: number };
+  w.__ringPending = 0;
+  const PROMPTS = '.confirmation-prompt, .catchup-resume-prompt, .reminder-prompt, '
+    + '.parental-pin-prompt, .live-category-picker';
+  const visible = (el: Element): boolean => {
+    const box = el.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) return false;
+    if (box.bottom < 0 || box.right < 0 || box.top > innerHeight || box.left > innerWidth) return false;
+    return getComputedStyle(el).visibility !== 'hidden';
+  };
+  const describe = (el: Element): string => {
+    const view = el.closest('[id^="view-"], #tab-bar, .tab-bar, [id]');
+    const key = el.getAttribute('data-key') ?? el.getAttribute('data-action') ?? '';
+    return `${view ? `#${view.id || view.className}` : '?'} ${el.tagName.toLowerCase()}.${
+      Array.from(el.classList).join('.')}${key ? `[${key}]` : ''}`;
+  };
+  const inspect = (input: string) => {
+    // A focus target that hands its ring to a child (the account slot and
+    // its avatar) shows one ring.
+    const keyboard = document.documentElement.classList.contains('keyboard-nav');
+    const owner = document.querySelector('[data-ring-owner]');
+    // FocusRing's own exception: with the pointer in charge, what it hovers
+    // stays lit beside the owner's ring unless the owner is modal.
+    const hoverLit = (el: Element) => !keyboard && !!owner && !owner.contains(el)
+      && owner.getAttribute('data-ring-owner') !== 'modal' && !!el.closest('[data-ring-hover]');
+    const lit = Array.from(document.querySelectorAll('.focused')).filter(visible)
+      .filter((el) => !hoverLit(el));
+    const rings = lit.filter((el) => !lit.some((other) => other !== el && el.contains(other)));
+    const active = document.activeElement;
+    // A text box with the caret is its own ring.
+    if (active instanceof HTMLInputElement && visible(active)
+        && !rings.some((el) => el.contains(active))) rings.push(active);
+    const prompts = Array.from(document.querySelectorAll(PROMPTS))
+      .filter((el) => !el.classList.contains('hidden') && visible(el));
+    const shown = ['view-channels', 'view-player', 'player-sidebar', 'player-menu', 'subtitle-search',
+      'subtitle-offset', 'view-epg', 'view-settings', 'view-parental-controls', 'view-reminders',
+      'view-movies', 'view-series', 'view-search'].filter((id) => {
+      const el = document.getElementById(id);
+      return !!el && visible(el);
+    });
+    // The bare full-screen player has nothing to focus.
+    const barePlayer = shown.length === 1 && shown[0] === 'view-player';
+    // A parked ring on screen with none lit means the owner never took it back,
+    // unless the owner was entered by the pointer and waits for a key.
+    const parked = rings.length === 0
+      && Array.from(document.querySelectorAll('.focused-parked'))
+        .some((el) => visible(el) && !el.closest('[data-ring-owner="deferred"]'));
+    const kind = rings.length > 1 ? 'multiple'
+      // Stacked prompts: the ring belongs in whichever one is on top.
+      : prompts.length && !rings.some((el) => prompts.some((p) => p.contains(el))) ? 'prompt'
+        : parked ? 'parked'
+          : rings.length === 0 && keyboard && !barePlayer ? 'none' : null;
+    return {
+      kind, input, shown,
+      rings: rings.map(describe),
+      active: active && active !== document.body ? describe(active) : '',
+    };
+  };
+  const check = (input: string) => {
+    w.__ringPending! += 1;
+    const done = () => { w.__ringPending! -= 1; };
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const first = inspect(input).kind;
+      if (!first || (first === 'none' && !recordNone)) { done(); return; }
+      // Panels slide in and out; only a screen that stays wrong counts.
+      setTimeout(() => {
+        const report = inspect(input);
+        if (report.kind && (report.kind !== 'none' || recordNone)) w.__ringAudit?.(JSON.stringify(report));
+        done();
+      }, 500);
+    }));
+  };
+  window.addEventListener('keydown', (e) => check(`key ${e.key || String(e.keyCode)}`), true);
+  window.addEventListener('wheel', (e) => check(`wheel ${String(e.deltaY)}`), true);
+  window.addEventListener('click', () => check('click'), true);
+  // Prompts a timer or launch opens get checked without waiting for a key.
+  let promptSet = '';
+  new MutationObserver(() => {
+    const set = Array.from(document.querySelectorAll(PROMPTS))
+      .map((el, i) => (el.classList.contains('hidden') ? '' : `${i}:${el.className}`))
+      .filter(Boolean).join('|');
+    if (set !== promptSet) {
+      promptSet = set;
+      check(set ? 'prompt shown' : 'prompt hidden');
+    }
+  }).observe(document.documentElement, {
+    subtree: true, childList: true, attributes: true, attributeFilter: ['class'],
+  });
+}
 
 // The simulation project runs with Chromium 53's API surface. Assertions that
 // merely *introspect* through a newer API (rather than exercise app behavior)

@@ -289,4 +289,97 @@ describe('StorageService IndexedDB migration', () => {
     expect(Pruned.getLiveCategorySnapshot('x2')).toBeNull();
     await Pruned.clearUserData();
   });
+
+  const resumeEntry = (over: Partial<ResumeEntry>): ResumeEntry => ({
+    accountId: 'x1', kind: 'vod', itemId: 'm0', name: 'Movie Alpha', poster: '',
+    ext: 'mp4', position: 100, duration: 6_000, updatedAt: 1_000, ...over,
+  });
+  const resumeKeys = async () => (await loadUserRecords('playback-progress'))
+    .map(item => item.key)
+    .filter(key => key.startsWith('resume:'))
+    .sort();
+
+  it('trims over-cap resume scopes at startup and persists only the evictions', async () => {
+    localStorage.clear();
+    vi.resetModules();
+    const { StorageService: Seeded } = await import('./storage-service');
+    await Seeded.init();
+    await Seeded.clearUserData();
+    await Seeded.init();
+    const records = [];
+    for (let i = 0; i < 53; i++) {
+      const entry = resumeEntry({ itemId: `m${i}`, updatedAt: 1_000 + i });
+      records.push({ key: `resume:x1|vod|m${i}`, value: entry, updatedAt: entry.updatedAt });
+    }
+    const episode = resumeEntry({ kind: 'episode', itemId: 'e0', updatedAt: 1 });
+    records.push({ key: 'resume:x1|episode|e0', value: episode, updatedAt: 1 });
+    const { applyUserChanges } = await import('./idb-user-data');
+    await applyUserChanges('playback-progress', records);
+
+    vi.resetModules();
+    const putSpy = vi.spyOn(IDBObjectStore.prototype, 'put');
+    try {
+      const { StorageService: Relaunched } = await import('./storage-service');
+      await Relaunched.init();
+      expect(Relaunched.getResumeList('x1').filter(e => e.kind === 'vod')).toHaveLength(50);
+      expect(Relaunched.getResume('x1', 'vod', 'm2')).toBeNull();
+      expect(Relaunched.getResume('x1', 'vod', 'm3')).not.toBeNull();
+      expect(Relaunched.getResume('x1', 'episode', 'e0')).not.toBeNull();
+      await Relaunched.flush();
+      expect(putSpy.mock.contexts.some(store =>
+        (store as IDBObjectStore).name === 'playback-progress')).toBe(false);
+    } finally {
+      putSpy.mockRestore();
+    }
+    const keys = await resumeKeys();
+    expect(keys).toHaveLength(51);
+    expect(keys).not.toContain('resume:x1|vod|m0');
+    expect(keys).not.toContain('resume:x1|vod|m2');
+    expect(keys).toContain('resume:x1|episode|e0');
+
+    vi.resetModules();
+    const { StorageService: Cleared } = await import('./storage-service');
+    await Cleared.clearUserData();
+  });
+
+  it('persists resume evictions, list clears, and a refused Watchlist add', async () => {
+    localStorage.clear();
+    vi.resetModules();
+    const { StorageService: Stored } = await import('./storage-service');
+    await Stored.init();
+    await Stored.clearUserData();
+    await Stored.init();
+    for (let i = 0; i < 51; i++) {
+      Stored.setResume(resumeEntry({ itemId: `m${i}`, updatedAt: 1_000 + i }));
+    }
+    Stored.setResume(resumeEntry({ kind: 'episode', itemId: 'e0' }));
+    Stored.setResume(resumeEntry({ accountId: 'x2', itemId: 'm0' }));
+    await Stored.flush();
+    let keys = await resumeKeys();
+    expect(keys).toHaveLength(52);
+    expect(keys).not.toContain('resume:x1|vod|m0');
+
+    Stored.clearResumeList('x1', 'vod');
+    await Stored.flush();
+    expect(await resumeKeys()).toEqual(['resume:x1|episode|e0', 'resume:x2|vod|m0']);
+    Stored.clearResumeList('x1');
+    await Stored.flush();
+    keys = await resumeKeys();
+    expect(keys).toEqual(['resume:x2|vod|m0']);
+
+    const watch = (itemId: string, addedAt: number): WatchlistEntry => ({
+      accountId: 'x1', kind: 'vod', itemId, name: 'Movie Alpha', poster: '',
+      rating: '', categoryId: '1', addedAt,
+    });
+    for (let i = 0; i < 200; i++) expect(Stored.toggleWatchlist(watch(`w${i}`, i))).toBe('added');
+    expect(Stored.toggleWatchlist(watch('new', 9_000))).toBe('full');
+    Stored.toggleWatchlist({ ...watch('s1', 1), kind: 'series' });
+    Stored.clearWatchlist('x1', 'series');
+    await Stored.flush();
+    const watchKeys = (await loadUserRecords('watchlist')).map(item => item.key);
+    expect(watchKeys).toHaveLength(200);
+    expect(watchKeys).not.toContain('watch:x1|vod|new');
+    expect(watchKeys).not.toContain('watch:x1|series|s1');
+    await Stored.clearUserData();
+  });
 });

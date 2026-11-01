@@ -54,4 +54,44 @@ describe('VirtualScrollGuard', () => {
 
     expect(element.scrollTop).toBe(0);
   });
+
+  function smoothList(clientHeight: number): { element: HTMLElement; writes: string[] } {
+    const element = document.createElement('div');
+    document.body.appendChild(element);
+    element.style.setProperty('scroll-behavior', 'smooth');
+    Object.defineProperty(element, 'clientHeight', { value: clientHeight });
+    const writes: string[] = [];
+    let top = 0;
+    Object.defineProperty(element, 'scrollTop', {
+      get: () => top,
+      set: (value: number) => {
+        writes.push(element.style.getPropertyValue('scroll-behavior'));
+        top = value;
+      },
+    });
+    return { element, writes };
+  }
+
+  it('jumps past a viewport instantly despite smooth scrolling', () => {
+    const debug = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const guard = new VirtualScrollGuard();
+    const { element, writes } = smoothList(500);
+
+    guard.syncOffset(element, 'vertical', 4000);
+    vi.advanceTimersByTime(20);
+
+    expect(writes).toEqual(['auto', 'auto']);
+    expect(element.style.getPropertyValue('scroll-behavior')).toBe('smooth');
+    expect(debug.mock.calls.flat().join(' ')).toContain('event=scroll.jump.instant');
+    debug.mockRestore();
+  });
+
+  it('leaves a step within the viewport to the smooth scroll policy', () => {
+    const guard = new VirtualScrollGuard();
+    const { element, writes } = smoothList(500);
+
+    guard.syncOffset(element, 'vertical', 300);
+
+    expect(writes).toEqual(['smooth']);
+  });
 });

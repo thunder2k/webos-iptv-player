@@ -8,7 +8,7 @@ import type {
   ChannelScope,
   Programme,
 } from '../types';
-import { html, raw } from '../utils/dom';
+import { html, inShownView, raw } from '../utils/dom';
 import { morph } from '../utils/morph';
 import { channelKey, groupDisplayLabel, legacyChannelKey } from '../utils/channel';
 import { PlaylistService } from '../services/playlist-service';
@@ -27,10 +27,27 @@ import { getLocale, t, tp, type SupportedLocale } from '../i18n';
 import { VirtualList } from '../utils/virtual-list';
 import { VirtualScrollGuard } from '../utils/virtual-scroll';
 import { WorkerListSearch } from '../workers/list-search-client';
+import { isIndexRetryPending } from '../workers/index-retry';
 import { createLogger } from '../utils/logger';
 import { liveBadge } from './live-badge';
+import { Focus, Tier, type FocusScope, type Via } from '../navigation/focus-scope';
+import { InputMode } from '../navigation/input-mode';
 
 const log = createLogger('EpgGrid');
+
+function keyIndex(key: string, prefix: string): number {
+  return key.indexOf(prefix) === 0 ? Number(key.slice(prefix.length)) : -1;
+}
+
+const KEY_SELECTORS: Record<string, string> = {
+  tab: '#epg-playlists [data-playlist-index="%"]',
+  channel: '#epg-channels [data-channel-idx="%"]',
+  day: '#epg-dates [data-day-index="%"]',
+  prog: '#epg-programmes [data-prog-idx="%"]',
+  'filter:group': '.epg-group-button',
+  'filter:search': '.epg-search-wrap',
+  legend: '.epg-reminder-entry',
+};
 
 type FocusCol = 'playlists' | 'filters' | 'channels' | 'dates' | 'legend' | 'programmes';
 type FilterFocus = 'group' | 'search';
@@ -63,7 +80,7 @@ export class EpgGrid {
   private dayInitialized = false;
   private focusCol: FocusCol = 'channels';
   private focusProg = 0;
-  private resumePrompt = new CatchupResumePrompt();
+  private resumePrompt = new CatchupResumePrompt('prompt.epg');
   private archiveLoadingKey = '';
   private readonly channelVirtualizer = new VirtualList({
     itemSize: CHANNEL_ROW_SIZE,
@@ -107,6 +124,12 @@ export class EpgGrid {
   private programmeMeasureGeneration = 0;
   private scrollFrame: number | null = null;
   private readonly scrollGuard = new VirtualScrollGuard();
+  // State keeps the Guide's position; the scopes hold its key and own the
+  // ring and its reveal. The group menu is pushed over the grid while open.
+  readonly focusScope: FocusScope;
+  private readonly groupScope: FocusScope;
+  private groupScopePushed = false;
+  private dateCount = 0;
 
   constructor(
     container: HTMLElement,
@@ -118,6 +141,35 @@ export class EpgGrid {
     this.onChannelSelect = onChannelSelect;
     this.onRevealTabBar = onRevealTabBar;
     this.onManageReminders = onManageReminders;
+    this.focusScope = Focus.register({
+      id: 'guide.grid',
+      root: container,
+      leaveFor: { up: 'tabbar' },
+      defaultKey: () => this.gridKey(),
+      resolve: (key) => this.resolveGridKey(key),
+      has: (key) => this.hasRow(key),
+      reveal: (key) => this.revealGridKey(key),
+      // A caret left in the search box keeps the arrow keys from whatever owns them.
+      onRelease: () => this.blurSearchInput(),
+    });
+    this.groupScope = Focus.register({
+      id: 'guide.groups',
+      root: () => this.container.querySelector<HTMLElement>('.epg-group-menu'),
+      restrict: 'self-only',
+      tier: Tier.overlay,
+      when: () => this.groupOpen && inShownView(this.container),
+      defaultKey: () => `group:${String(this.groupFocusIdx)}`,
+      resolve: (key) => this.groupOption(keyIndex(key, 'group:')),
+      has: (key) => {
+        const index = keyIndex(key, 'group:');
+        return index >= 0 && index < this.getGroupOptions().length;
+      },
+      reveal: (key) => {
+        const index = keyIndex(key, 'group:');
+        return this.revealRow(this.container.querySelector<HTMLElement>('.epg-group-options'),
+          () => this.groupOption(index), this.groupVirtualizer, index);
+      },
+    });
     this.bindEvents();
   }
 
@@ -141,6 +193,8 @@ export class EpgGrid {
       : visible[0]?.globalIndex ?? -1;
     this.focusCol = 'channels';
     this.focusProg = 0;
+    this.groupOpen = false;
+    this.syncGroupScope();
   }
 
   focusReminderEntry(): void {
@@ -164,6 +218,7 @@ export class EpgGrid {
 
   deactivateFilters(): void {
     this.groupOpen = false;
+    this.syncGroupScope();
     this.channelSearchGeneration++;
     this.channelSearch.release();
     this.channelSearchPending = false;
@@ -266,13 +321,15 @@ export class EpgGrid {
       results = await this.channelSearch.query(source, query);
     } catch (error) {
       if (generation !== this.channelSearchGeneration) return;
-      log.error(
-        'Worker search failed; using main-thread fallback',
-        'event=search.worker.fallback.used',
-        'scope=list',
-        'owner=epg-grid',
-        error,
-      );
+      if (!isIndexRetryPending(error)) {
+        log.error(
+          'Worker search failed; using main-thread fallback',
+          'event=search.worker.fallback.used',
+          'scope=list',
+          'owner=epg-grid',
+          error,
+        );
+      }
       const ranked = rankByName(source.map(item => item.channel), query);
       const byChannel = new Map(source.map(item => [item.channel, item]));
       results = ranked.map(channel => byChannel.get(channel)!);
@@ -363,21 +420,32 @@ export class EpgGrid {
     input?.setSelectionRange(input.value.length, input.value.length);
   }
 
+  // Each way out of the search box sets where the ring lands before the caret
+  // goes, so the focusout paint never reveals a programme hovered meanwhile.
   private exitSearchToChannels(): void {
-    this.container.querySelector<HTMLInputElement>('.epg-search-input')?.blur();
     const visible = this.getVisibleChannels();
     this.focusCol = visible.length ? 'channels' : 'filters';
     if (visible.length && this.selectedChannelIdx < 0) {
       this.selectedChannelIdx = visible[0].globalIndex;
     }
+    this.container.querySelector<HTMLInputElement>('.epg-search-input')?.blur();
     this.render();
+    this.paint('key');
+  }
+
+  private blurSearchInput(): void {
+    if (this.searchInputFocused()) {
+      this.container.querySelector<HTMLInputElement>('.epg-search-input')!.blur();
+    }
   }
 
   private searchInputFocused(): boolean {
     return this.container.querySelector('.epg-search-input') === document.activeElement;
   }
 
-  render(ensureFocus = true): void {
+  // Only opening the Guide places the lists on the focus; after that the
+  // scopes reveal it on input, so a background refresh never scrolls.
+  render(placeFocus = false): void {
     const tabs = PlaylistService.playlistTabs;
     if (this.selectedPlaylist && !tabs.some(tab => tab.id === this.selectedPlaylist)) {
       this.selectedPlaylist = '';
@@ -399,6 +467,7 @@ export class EpgGrid {
 
     const channel = PlaylistService.channels[this.selectedChannelIdx];
     const dateOptions = this.getDateOptions();
+    this.dateCount = dateOptions.length;
     if (dateOptions.length > 0) {
       if (!this.dayInitialized) {
         this.selectedDay = this.findTodayIndex(dateOptions);
@@ -449,10 +518,10 @@ export class EpgGrid {
     const selectedVisibleIdx = visibleChannels.findIndex(
       item => item.globalIndex === this.selectedChannelIdx,
     );
-    if (ensureFocus && this.focusCol === 'channels') {
+    if (placeFocus && this.focusCol === 'channels') {
       this.channelVirtualizer.ensureVisible(selectedVisibleIdx, channelViewport);
     }
-    if (ensureFocus && this.focusCol === 'programmes') {
+    if (placeFocus && this.focusCol === 'programmes') {
       this.programmeVirtualizer.ensureVisible(this.focusProg, programmeViewport);
     }
     const channelRange = this.channelVirtualizer.getRange(
@@ -461,7 +530,7 @@ export class EpgGrid {
     );
     const programmeRange = this.programmeVirtualizer.getRange(programmes.length, programmeViewport);
     const groupViewport = previousGroupList?.clientHeight || 400;
-    if (this.groupOpen && ensureFocus) {
+    if (this.groupOpen && placeFocus) {
       this.groupVirtualizer.ensureVisible(this.groupFocusIdx, groupViewport);
     }
     const groupRange = this.groupVirtualizer.getRange(groups.length, groupViewport);
@@ -485,21 +554,21 @@ export class EpgGrid {
           <div class="epg-channels-pane ${this.focusCol === 'channels' || this.focusCol === 'playlists' || this.focusCol === 'filters' ? 'pane-focused' : ''}">
             ${showTabs ? html`
               <div class="playlist-tabs epg-playlist-tabs" id="epg-playlists">
-                <div class="playlist-tab ${!this.selectedPlaylist ? 'active' : ''} ${this.focusCol === 'playlists' && this.playlistFocusIdx === 0 ? 'focused' : ''}"
+                <div class="playlist-tab ${!this.selectedPlaylist ? 'active' : ''}"
                      data-key="epg-tab:"
-                     data-playlist="" data-playlist-index="0">${t('common.all')}</div>
+                     data-playlist="" data-playlist-index="0" data-hover-target>${t('common.all')}</div>
                 ${tabs.map((tab, i) => html`
-                  <div class="playlist-tab ${tab.id === this.selectedPlaylist ? 'active' : ''} ${this.focusCol === 'playlists' && this.playlistFocusIdx === i + 1 ? 'focused' : ''}"
+                  <div class="playlist-tab ${tab.id === this.selectedPlaylist ? 'active' : ''}"
                        data-key="epg-tab:${tab.id}"
-                       data-playlist="${tab.id}" data-playlist-index="${i + 1}">${tab.name}</div>
+                       data-playlist="${tab.id}" data-playlist-index="${i + 1}" data-hover-target>${tab.name}</div>
                 `)}
               </div>
             ` : ''}
             <div class="epg-filter-bar">
               <div class="epg-group-control">
                 <button type="button"
-                        class="epg-filter-control epg-group-button ${this.focusCol === 'filters' && this.filterFocus === 'group' ? 'focused' : ''} ${this.selectedGroup !== 'builtin:all' ? 'active' : ''}"
-                        data-key="epg-group-button" data-epg-group-toggle
+                        class="epg-filter-control epg-group-button ${this.selectedGroup !== 'builtin:all' ? 'active' : ''}"
+                        data-key="epg-group-button" data-epg-group-toggle data-hover-target
                         aria-expanded="${this.groupOpen ? 'true' : 'false'}">
                   <span class="epg-group-button-prefix">${t('common.groups')}:</span>
                   <span class="epg-group-button-label">${
@@ -516,9 +585,9 @@ export class EpgGrid {
                       ${groups.slice(groupRange.start, groupRange.end).map((group, offset) => {
                         const i = groupRange.start + offset;
                         return html`
-                        <div class="epg-group-option ${group.id === this.selectedGroup ? 'active' : ''} ${i === this.groupFocusIdx ? 'focused' : ''}"
+                        <div class="epg-group-option ${group.id === this.selectedGroup ? 'active' : ''}"
                              data-key="epg-group:${group.id}"
-                             data-epg-group="${group.id}" data-group-index="${i}"
+                             data-epg-group="${group.id}" data-group-index="${i}" data-hover-target
                              style="top:${this.groupVirtualizer.getItemOffset(i)}px">
                           <span class="epg-group-option-label">${group.label}</span>
                           <span class="epg-group-option-count">${group.count}</span>
@@ -530,7 +599,7 @@ export class EpgGrid {
                   </div>
                 ` : ''}
               </div>
-              <label class="epg-search-wrap ${this.focusCol === 'filters' && this.filterFocus === 'search' ? 'focused' : ''}">
+              <label class="epg-search-wrap">
                 <span class="epg-search-icon">${raw(SEARCH_ICON)}</span>
                 <input type="text" class="epg-search-input" data-key="epg-search"
                        aria-label="${t('search.ariaChannels')}"
@@ -553,12 +622,11 @@ export class EpgGrid {
                 .map(({ channel: ch, globalIndex }, offset) => {
               const itemIndex = channelRange.start + offset;
               const sel = globalIndex === this.selectedChannelIdx;
-              const foc = sel && this.focusCol === 'channels';
               return html`
-                <div class="epg-channel-item ${sel ? 'selected' : ''} ${foc ? 'focused' : ''}"
+                <div class="epg-channel-item ${sel ? 'selected' : ''}"
                      data-key="${channelKey(ch)}"
                      data-channel-idx="${globalIndex}"
-                     data-channel-pos="${itemIndex}"
+                     data-channel-pos="${itemIndex}" data-hover-target
                      style="top:${this.channelVirtualizer.getItemOffset(itemIndex)}px">
                   <span class="epg-ch-num">${globalIndex + 1}</span>
                   <span class="epg-ch-name">${raw(channelLockBadge(ch))}${ch.name}</span>
@@ -571,17 +639,16 @@ export class EpgGrid {
           </div>
           <div class="epg-right-pane">
             <div class="epg-date-bar">
-              <div class="epg-date-list ${this.focusCol === 'dates' ? 'pane-focused' : ''}" id="epg-dates">
+              <div class="epg-date-list ${this.focusCol === 'dates' ? 'pane-focused' : ''}" id="epg-dates" data-edge-scroll>
                 ${dateOptions.map((d, i) => {
                   const sel = i === this.selectedDay;
-                  const foc = sel && this.focusCol === 'dates';
                   const isToday = d.getTime() === todayMs;
                   const dayState = d.getTime() < todayMs ? 'day-past' : d.getTime() > todayMs ? 'day-future' : '';
                   const lbl = formatDayLabel(d);
                   return html`
-                    <div class="epg-date-item ${sel ? 'selected' : ''} ${foc ? 'focused' : ''} ${isToday ? 'today' : ''} ${dayState}"
+                    <div class="epg-date-item ${sel ? 'selected' : ''} ${isToday ? 'today' : ''} ${dayState}"
                          data-key="${displayDayKey(d)}"
-                         data-day-index="${i}">
+                         data-day-index="${i}" data-hover-target>
                       <span class="epg-date-weekday">${lbl.weekday}</span>
                       <span class="epg-date-date">${lbl.date}</span>
                     </div>
@@ -596,7 +663,7 @@ export class EpgGrid {
                   <i class="epg-legend-dot"></i><span>${t('epg.upcoming')}</span>
                 </span>
                 <button type="button"
-                        class="epg-legend-item epg-reminder-entry ${this.focusCol === 'legend' ? 'focused' : ''}"
+                        class="epg-legend-item epg-reminder-entry"
                         data-epg-reminders aria-label="${t('reminderManager.title')}">
                   ${raw(bellIcon(true))}<span>${t('epg.reminder')}</span>
                 </button>
@@ -610,7 +677,6 @@ export class EpgGrid {
                        style="height:${this.programmeVirtualizer.getTotalSize(programmes.length)}px">
                   ${programmes.slice(programmeRange.start, programmeRange.end).map((p, offset) => {
                     const i = programmeRange.start + offset;
-                    const foc = i === this.focusProg && this.focusCol === 'programmes';
                     const now = Date.now();
                     const startMs = p.start.getTime();
                     const stopMs = p.stop.getTime();
@@ -624,9 +690,9 @@ export class EpgGrid {
                     const progress = catchupAvailable && hasCatchup ? progressMap!.get(startMs) : undefined;
                     return html`
                       <div class="epg-programme-item
-                                  state-${state} ${current ? 'current' : ''} ${foc ? 'focused' : ''}"
+                                  state-${state} ${current ? 'current' : ''}"
                            data-key="${String(p.start.getTime())}"
-                           data-prog-idx="${i}"
+                           data-prog-idx="${i}" data-hover-target
                            style="top:${this.programmeVirtualizer.getItemOffset(i)}px">
                         <div class="epg-prog-time-col">
                           <span class="epg-prog-time">${formatTime(p.start)}</span>
@@ -642,7 +708,7 @@ export class EpgGrid {
                             ${progress ? html`<span class="epg-catchup-badge ${progress.completed ? 'watched' : 'resume'}">${t(progress.completed ? 'epg.watched' : 'common.resume')}</span>` : ''}
                           </div>
                           ${progress && !progress.completed && progress.duration > 0 ? html`<div class="epg-catchup-progress"><div class="epg-catchup-progress-fill" style="width: ${Math.min(100, Math.max(0, Math.round(progress.position / progress.duration * 100)))}%"></div></div>` : ''}
-                          ${p.description ? html`<div class="epg-prog-desc">${p.description.slice(0, 200)}</div>` : ''}
+                          ${p.description ? html`<div class="epg-prog-desc">${p.description}</div>` : ''}
                         </div>
                       </div>
                     `;
@@ -678,7 +744,12 @@ export class EpgGrid {
     if (previousGroupList && groupList) {
       this.scrollGuard.syncOffset(groupList, 'vertical', this.groupVirtualizer.scrollOffset);
     }
-    if (ensureFocus && previousChannelList) this.scrollFocusedIntoView();
+    // A fresh list's first pass never writes its scroll offsets; only this one moves it.
+    if (placeFocus && !previousChannelList && channelList?.clientHeight) {
+      this.render(true);
+      return;
+    }
+    this.syncFocus();
   }
 
   private scheduleProgrammeRowMeasurement(): void {
@@ -718,6 +789,9 @@ export class EpgGrid {
       '#epg-programmes .epg-virtual-spacer',
     );
     if (!spacer) return;
+    const list = this.container.querySelector<HTMLElement>('.epg-programmes-pane');
+    const anchor = this.programmeAnchor(list);
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
     const rows = this.container.querySelectorAll<HTMLElement>('.epg-programme-item');
     spacer.style.height = `${this.programmeVirtualizer.getTotalSize(this.programmeCount)}px`;
     rows.forEach((row) => {
@@ -725,6 +799,26 @@ export class EpgGrid {
       if (index < 0) return;
       row.style.top = `${this.programmeVirtualizer.getItemOffset(index)}px`;
     });
+    if (!anchor || !list) return;
+    // Rows above the focused one changed size: scroll with it, so a
+    // programme a key just revealed stays where it was shown.
+    const delta = Math.round(anchor.getBoundingClientRect().top - anchorTop);
+    if (!delta) return;
+    this.scrollGuard.syncOffset(list, 'vertical', list.scrollTop + delta);
+    this.programmeVirtualizer.setScrollOffset(list.scrollTop);
+    this.render();
+  }
+
+  // The focused programme, while any of it shows in the list.
+  private programmeAnchor(list: HTMLElement | null): HTMLElement | null {
+    if (!list || this.focusCol !== 'programmes') return null;
+    const row = this.container.querySelector<HTMLElement>(
+      `#epg-programmes [data-prog-idx="${String(this.focusProg)}"]`,
+    );
+    if (!row) return null;
+    const r = row.getBoundingClientRect();
+    const l = list.getBoundingClientRect();
+    return r.bottom > l.top && r.top < l.bottom ? row : null;
   }
 
   private bindEvents(): void {
@@ -734,6 +828,7 @@ export class EpgGrid {
       const target = e.target as HTMLElement;
       if (target.closest('[data-epg-reminders]')) {
         this.groupOpen = false;
+        this.syncGroupScope();
         this.focusCol = 'legend';
         this.onManageReminders?.();
         return;
@@ -806,21 +901,21 @@ export class EpgGrid {
       }
     });
 
-    this.container.addEventListener('mouseover', (e: MouseEvent) => {
+    // The pointer lights a group option or a programme where it rests; the
+    // other columns answer it with :hover alone. The open group menu is a
+    // modal scope, so no hover behind it arrives here.
+    this.container.addEventListener('nav:hover', (e: Event) => {
       const target = e.target as HTMLElement;
       const groupItem = target.closest<HTMLElement>('[data-epg-group]');
       if (groupItem) {
-        const idx = parseInt(groupItem.dataset.groupIndex!, 10);
-        if (idx !== this.groupFocusIdx) {
-          this.groupFocusIdx = idx;
-          this.render();
-        }
+        this.groupFocusIdx = parseInt(groupItem.dataset.groupIndex!, 10);
+        this.paint('pointer');
         return;
       }
-      if (this.groupOpen) return;
       const item = target.closest<HTMLElement>('#epg-programmes [data-prog-idx]');
       if (!item) return;
-      this.setProgFocusLight(parseInt(item.dataset.progIdx!, 10));
+      this.lightProgramme(parseInt(item.dataset.progIdx!, 10));
+      this.paint('pointer');
     });
 
     this.container.addEventListener('input', (e: Event) => {
@@ -845,12 +940,14 @@ export class EpgGrid {
       this.groupOpen = false;
       this.focusCol = 'filters';
       this.filterFocus = 'search';
-      if (menuWasOpen) {
-        this.render();
-      } else {
-        this.container.querySelector('.epg-group-button')?.classList.remove('focused');
-        this.container.querySelector('.epg-search-wrap')?.classList.add('focused');
-      }
+      if (menuWasOpen) this.render();
+      this.paint(InputMode.current === 'keys' ? 'key' : 'pointer');
+    });
+
+    // However the caret leaves, the ring comes back where the Guide rests.
+    this.container.addEventListener('focusout', (e: FocusEvent) => {
+      if (!(e.target as HTMLElement).classList.contains('epg-search-input')) return;
+      this.paint(InputMode.current === 'keys' ? 'key' : 'pointer');
     });
 
     this.container.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -863,9 +960,10 @@ export class EpgGrid {
       } else if (e.key === 'Escape' || e.keyCode === CONFIG.KEYS.BACK) {
         e.preventDefault();
         e.stopPropagation();
-        (input as HTMLInputElement).blur();
         this.focusCol = 'filters';
+        (input as HTMLInputElement).blur();
         this.render();
+        this.paint('key');
       }
     });
 
@@ -885,59 +983,137 @@ export class EpgGrid {
       if (this.scrollFrame !== null) return;
       this.scrollFrame = requestAnimationFrame(() => {
         this.scrollFrame = null;
-        this.render(false);
+        this.render();
       });
     }, true);
   }
 
-  private setProgFocusLight(idx: number): void {
-    if (this.focusProg === idx && this.focusCol === 'programmes') return;
-    this.container.querySelectorAll('.epg-programme-item.focused').forEach(el => el.classList.remove('focused'));
-    this.container.querySelector<HTMLElement>(`[data-prog-idx="${idx}"]`)?.classList.add('focused');
+  // Hover and the D-pad move within the column without a render: only the
+  // pane highlight and the ring change. The scope paints the ring, and its
+  // reveal renders a row outside the virtual window.
+  private lightProgramme(idx: number): void {
     this.focusProg = idx;
-    if (this.focusCol !== 'programmes') {
-      this.focusCol = 'programmes';
-      this.container.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
-      this.container.querySelector('.epg-programmes-pane')?.classList.add('pane-focused');
+    if (this.focusCol === 'programmes') return;
+    this.focusCol = 'programmes';
+    this.container.querySelectorAll('.pane-focused').forEach(el => el.classList.remove('pane-focused'));
+    this.container.querySelector('.epg-programmes-pane')?.classList.add('pane-focused');
+  }
+
+
+  // While the search box has the caret the ring stays on it; a programme
+  // hovered meanwhile is only noted, and gets the ring when the caret leaves.
+  private gridKey(): string | null {
+    if (this.searchInputFocused()) return 'filter:search';
+    switch (this.focusCol) {
+      case 'playlists': return `tab:${String(this.playlistFocusIdx)}`;
+      case 'filters': return `filter:${this.filterFocus}`;
+      case 'channels':
+        return this.selectedChannelIdx >= 0 ? `channel:${String(this.selectedChannelIdx)}` : null;
+      case 'dates': return this.dateCount ? `day:${String(this.selectedDay)}` : null;
+      case 'legend': return 'legend';
+      case 'programmes':
+        return this.focusProg < this.programmeCount ? `prog:${String(this.focusProg)}` : null;
     }
   }
 
-  private moveProgrammeFocus(idx: number): void {
-    const pane = this.container.querySelector<HTMLElement>('.epg-programmes-pane');
-    const target = this.container.querySelector<HTMLElement>(`[data-prog-idx="${idx}"]`);
-    if (!pane || !target) {
-      this.focusProg = idx;
-      this.render();
-      return;
-    }
+  private resolveGridKey(key: string): HTMLElement | null {
+    const colon = key.indexOf(':');
+    const row = colon > 0 ? KEY_SELECTORS[key.slice(0, colon)] : undefined;
+    const selector = row
+      ? row.replace('%', key.slice(colon + 1))
+      : KEY_SELECTORS[key];
+    return selector ? this.container.querySelector<HTMLElement>(selector) : null;
+  }
 
-    const viewport = pane.clientHeight || EPG_VIEWPORT_FALLBACK;
-    this.programmeVirtualizer.setScrollOffset(pane.scrollTop);
-    this.programmeVirtualizer.ensureVisible(idx, viewport);
-    this.setProgFocusLight(idx);
-    this.scrollGuard.syncOffset(
-      pane,
-      'vertical',
-      this.programmeVirtualizer.scrollOffset,
+  // A virtual row scrolled out of the rendered window is still focused.
+  private hasRow(key: string): boolean {
+    const prog = keyIndex(key, 'prog:');
+    if (prog >= 0) return prog < this.programmeCount;
+    const channel = keyIndex(key, 'channel:');
+    return channel >= 0 && this.getVisibleChannels().some(item => item.globalIndex === channel);
+  }
+
+  private revealGridKey(key: string): boolean | null {
+    const prog = keyIndex(key, 'prog:');
+    if (prog >= 0) {
+      return this.revealRow(this.container.querySelector<HTMLElement>('.epg-programmes-pane'),
+        () => this.resolveGridKey(key), this.programmeVirtualizer, prog);
+    }
+    const channel = keyIndex(key, 'channel:');
+    if (channel >= 0) {
+      const index = this.getVisibleChannels().findIndex(item => item.globalIndex === channel);
+      return this.revealRow(this.container.querySelector<HTMLElement>('.epg-channel-list'),
+        () => this.resolveGridKey(key), this.channelVirtualizer, index);
+    }
+    return false;
+  }
+
+  private groupOption(index: number): HTMLElement | null {
+    return this.container.querySelector<HTMLElement>(
+      `.epg-group-menu [data-group-index="${String(index)}"]`,
     );
   }
 
-  private scrollFocusedIntoView(): void {
-    if (this.groupOpen) {
-      this.container.querySelector<HTMLElement>('.epg-group-option.focused')
-        ?.scrollIntoView({ block: 'nearest' });
+  // Brings a virtual row wholly into its list: renders it first when it lies
+  // outside the rendered window, then scrolls by what the DOM shows, since
+  // programme rows are only estimated until measured.
+  private revealRow(
+    list: HTMLElement | null,
+    find: () => HTMLElement | null,
+    virtualizer: VirtualList,
+    index: number,
+  ): boolean | null {
+    if (!list || index < 0) return false;
+    let moved = false;
+    let row = find();
+    if (!row) {
+      virtualizer.setScrollOffset(list.scrollTop);
+      virtualizer.ensureVisible(index, list.clientHeight || virtualizer.fallbackViewportSize);
+      this.scrollGuard.syncOffset(list, 'vertical', virtualizer.scrollOffset);
+      this.render();
+      moved = true;
+      row = find();
+    }
+    if (!row || !list.clientHeight) return moved || null;
+    const r = row.getBoundingClientRect();
+    const top = list.getBoundingClientRect().top + list.clientTop;
+    const bottom = top + list.clientHeight;
+    let delta = 0;
+    if (r.top < top - 1) delta = r.top - top;
+    else if (r.bottom > bottom + 1) delta = Math.min(r.bottom - bottom, r.top - top);
+    if (!delta) return moved || null;
+    this.scrollGuard.syncOffset(list, 'vertical', list.scrollTop + delta);
+    virtualizer.setScrollOffset(list.scrollTop);
+    this.render();
+    return true;
+  }
+
+  private syncGroupScope(): void {
+    if (this.groupOpen === this.groupScopePushed) return;
+    this.groupScopePushed = this.groupOpen;
+    if (this.groupOpen) Focus.push(this.groupScope);
+    else Focus.pop(this.groupScope);
+  }
+
+  // Follows the state a render settled on; the next pass paints it.
+  private syncFocus(): void {
+    this.syncGroupScope();
+    if (this.groupOpen) this.groupScope.track(`group:${String(this.groupFocusIdx)}`);
+    this.focusScope.track(this.gridKey());
+  }
+
+  // Requests the ring where the state rests, now: a key may reveal it even
+  // when it moved nothing, such as Down on the last programme. A scope that
+  // does not own the keys only follows the state, so no reveal waits in it.
+  private paint(via: Via): void {
+    const scope = this.groupOpen ? this.groupScope : this.focusScope;
+    const key = this.groupOpen ? `group:${String(this.groupFocusIdx)}` : this.gridKey();
+    if (Focus.owner() !== scope) {
+      scope.track(key);
       return;
     }
-    const map: Record<FocusCol, string> = {
-      playlists: '.epg-playlist-tabs .playlist-tab.focused',
-      filters: '.epg-filter-bar .focused',
-      channels: '.epg-channel-item.focused',
-      dates: '.epg-date-item.focused',
-      legend: '.epg-reminder-entry.focused',
-      programmes: '.epg-programme-item.focused',
-    };
-    const el = this.container.querySelector<HTMLElement>(map[this.focusCol]);
-    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    scope.focus(key, via);
+    Focus.flush();
   }
 
   private loadArchiveAvailability(channel: Channel | undefined): void {
@@ -1050,11 +1226,16 @@ export class EpgGrid {
     this.render();
   }
 
-  handleAction(action: Action, _event?: NumberEvent): void {
+  handleAction(action: Action, event?: NumberEvent): void {
     if (this.resumePrompt.visible) {
       this.resumePrompt.handleAction(action);
       return;
     }
+    this.act(action, event);
+    if (!this.resumePrompt.visible) this.paint('key');
+  }
+
+  private act(action: Action, _event?: NumberEvent): void {
 
     if (this.groupOpen) {
       const groups = this.getGroupOptions();
@@ -1093,11 +1274,15 @@ export class EpgGrid {
     }
 
     if (action === 'back' && this.searchInputFocused()) {
-      this.container.querySelector<HTMLInputElement>('.epg-search-input')?.blur();
       this.focusCol = 'filters';
+      this.container.querySelector<HTMLInputElement>('.epg-search-input')?.blur();
       this.render();
       return;
     }
+
+    // Channel Up/Down pass through the search box; a programme hovered while
+    // typing must not move unseen behind the caret.
+    if ((action === 'channel_up' || action === 'channel_down') && this.searchInputFocused()) return;
 
     const tabs = PlaylistService.playlistTabs;
     const showTabs = tabs.length > 1;
@@ -1130,7 +1315,7 @@ export class EpgGrid {
           this.onRevealTabBar?.();
         } else if (this.focusCol === 'programmes') {
           if (this.focusProg > 0) {
-            this.moveProgrammeFocus(this.focusProg - 1);
+            this.lightProgramme(this.focusProg - 1);
           } else {
             this.focusCol = 'dates';
             this.render();
@@ -1154,13 +1339,13 @@ export class EpgGrid {
             this.focusProg = 0;
             this.render();
           }
-        } else if (this.focusCol === 'dates' || this.focusCol === 'legend') {
+        } else if ((this.focusCol === 'dates' || this.focusCol === 'legend') && progCount) {
           this.focusCol = 'programmes';
           this.focusProg = 0;
           this.render();
         } else if (this.focusCol === 'programmes') {
           if (this.focusProg < progCount - 1) {
-            this.moveProgrammeFocus(this.focusProg + 1);
+            this.lightProgramme(this.focusProg + 1);
           }
         }
         break;
@@ -1207,6 +1392,7 @@ export class EpgGrid {
             this.render();
           }
         } else if (this.focusCol === 'channels') {
+          if (!progCount) break;
           this.focusCol = 'programmes';
           this.focusProg = 0;
           this.render();
@@ -1231,7 +1417,7 @@ export class EpgGrid {
             this.focusProg = 0;
           }
         } else if (this.focusCol === 'programmes') {
-          this.moveProgrammeFocus(Math.max(0, this.focusProg - 10));
+          this.lightProgramme(Math.max(0, this.focusProg - 10));
           break;
         }
         this.render();
@@ -1245,7 +1431,7 @@ export class EpgGrid {
             this.focusProg = 0;
           }
         } else if (this.focusCol === 'programmes') {
-          this.moveProgrammeFocus(Math.min(progCount - 1, this.focusProg + 10));
+          this.lightProgramme(Math.min(progCount - 1, this.focusProg + 10));
           break;
         }
         this.render();
@@ -1264,6 +1450,7 @@ export class EpgGrid {
         } else if (this.focusCol === 'programmes') {
           void this.activateFocusedProgramme();
         } else if (this.focusCol === 'dates') {
+          if (!progCount) break;
           this.focusCol = 'programmes';
           this.focusProg = 0;
           this.render();

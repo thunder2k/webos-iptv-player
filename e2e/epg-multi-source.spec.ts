@@ -171,6 +171,28 @@ test('Back closes EPG filters before leaving the guide', async ({ page }) => {
   await expect(page.locator('#view-channels')).toBeVisible();
 });
 
+test('an open groups menu holds the only ring, which returns to its button on Back', async ({ page }) => {
+  await setup(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await page.evaluate(() =>
+    document.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 403, bubbles: true })));
+  await expect(page.locator('#view-epg')).toBeVisible();
+
+  const button = page.locator('[data-epg-group-toggle]');
+  await button.click();
+  await expect(page.locator('.epg-group-menu')).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.locator('.epg-group-option.focused')).toHaveCount(1);
+  await expect(button).not.toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.epg-group-menu')).toHaveCount(0);
+  await expect(button).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+});
+
 test('Blue leaves EPG search without stale keyboard focus', async ({ page }) => {
   await setup(page);
   await page.goto('/');

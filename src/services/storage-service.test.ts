@@ -109,6 +109,108 @@ describe('StorageService', () => {
     expect(StorageService.getXtreamCatalogRefreshIntervalHours()).toBe(6);
   });
 
+  describe('catalog sort preferences', () => {
+    it('defaults Movies and Series to server order without writing', () => {
+      expect(StorageService.getCatalogSort('vod')).toEqual({ by: 'default', direction: 'asc' });
+      expect(StorageService.getCatalogSort('series')).toEqual({ by: 'default', direction: 'asc' });
+      expect(localStorage.getItem('iptv_catalog_sort_vod')).toBeNull();
+      expect(localStorage.getItem('iptv_catalog_sort_series')).toBeNull();
+    });
+
+    it('persists every field and direction independently for Movies and Series', () => {
+      for (const by of ['default', 'name', 'added', 'rating', 'year'] as const) {
+        for (const direction of ['asc', 'desc'] as const) {
+          expect(StorageService.setCatalogSort('vod', { by, direction })).toBe(true);
+          expect(StorageService.getCatalogSort('vod')).toEqual({ by, direction });
+        }
+      }
+      StorageService.setCatalogSort('vod', { by: 'rating', direction: 'asc' });
+      StorageService.setCatalogSort('series', { by: 'name', direction: 'desc' });
+      expect(StorageService.getCatalogSort('vod')).toEqual({ by: 'rating', direction: 'asc' });
+      expect(StorageService.getCatalogSort('series')).toEqual({ by: 'name', direction: 'desc' });
+      expect(JSON.parse(localStorage.getItem('iptv_catalog_sort_vod')!))
+        .toEqual({ by: 'rating', direction: 'asc' });
+    });
+
+    it('is not scoped to the selected account', () => {
+      StorageService.setSelectedXtreamAccountId('a1');
+      StorageService.setCatalogSort('vod', { by: 'year', direction: 'desc' });
+      StorageService.setSelectedXtreamAccountId('a2');
+      expect(StorageService.getCatalogSort('vod')).toEqual({ by: 'year', direction: 'desc' });
+    });
+
+    it('stores only the field and direction', () => {
+      const sort = { by: 'added', direction: 'asc', extra: 'x' } as unknown as Parameters<typeof StorageService.setCatalogSort>[1];
+      StorageService.setCatalogSort('series', sort);
+      expect(JSON.parse(localStorage.getItem('iptv_catalog_sort_series')!))
+        .toEqual({ by: 'added', direction: 'asc' });
+    });
+
+    it('rejects invalid preferences without overwriting the saved one', () => {
+      StorageService.setCatalogSort('vod', { by: 'name', direction: 'desc' });
+      for (const sort of [
+        { by: 'popularity', direction: 'asc' },
+        { by: 'name', direction: 'up' },
+        { by: null, direction: 'asc' },
+      ]) {
+        expect(() => StorageService.setCatalogSort(
+          'vod', sort as unknown as Parameters<typeof StorageService.setCatalogSort>[1],
+        )).toThrow(RangeError);
+      }
+      expect(StorageService.getCatalogSort('vod')).toEqual({ by: 'name', direction: 'desc' });
+    });
+
+    it('falls back to server order for malformed stored values', () => {
+      const fallback = { by: 'default', direction: 'asc' };
+      for (const raw of [
+        'not json',
+        JSON.stringify('name'),
+        JSON.stringify(42),
+        JSON.stringify(null),
+        JSON.stringify([]),
+        JSON.stringify({ by: 'name' }),
+        JSON.stringify({ direction: 'desc' }),
+        JSON.stringify({ by: 'popularity', direction: 'desc' }),
+        JSON.stringify({ by: 'rating', direction: 'DESC' }),
+        JSON.stringify({ by: 'Rating', direction: 'desc' }),
+      ]) {
+        localStorage.setItem('iptv_catalog_sort_vod', raw);
+        expect(StorageService.getCatalogSort('vod')).toEqual(fallback);
+      }
+      localStorage.setItem('iptv_catalog_sort_series', JSON.stringify({ by: 'year', direction: 'asc', extra: 1 }));
+      expect(StorageService.getCatalogSort('series')).toEqual({ by: 'year', direction: 'asc' });
+    });
+
+    it('reports a failed write and keeps the previous preference', () => {
+      StorageService.setCatalogSort('vod', { by: 'name', direction: 'asc' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new DOMException('full', 'QuotaExceededError');
+      });
+      try {
+        expect(StorageService.setCatalogSort('vod', { by: 'added', direction: 'desc' })).toBe(false);
+      } finally {
+        setItem.mockRestore();
+        warn.mockRestore();
+        error.mockRestore();
+      }
+      expect(StorageService.getCatalogSort('vod')).toEqual({ by: 'name', direction: 'asc' });
+    });
+
+    it('falls back to server order when storage cannot be read', () => {
+      StorageService.setCatalogSort('series', { by: 'rating', direction: 'desc' });
+      const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('denied');
+      });
+      try {
+        expect(StorageService.getCatalogSort('series')).toEqual({ by: 'default', direction: 'asc' });
+      } finally {
+        getItem.mockRestore();
+      }
+    });
+  });
+
   it('defaults live preview to off without writing a preference', () => {
     expect(StorageService.getLivePreview()).toBe(false);
     expect(localStorage.getItem('iptv_live_preview')).toBeNull();
@@ -510,7 +612,7 @@ describe('StorageService search history', () => {
   });
 
   it('evicts the oldest search past the cap', () => {
-    const max = CONFIG.SEARCH_HISTORY.MAX_ENTRIES;
+    const max = CONFIG.SEARCH.HISTORY_MAX_ENTRIES;
     for (let i = 0; i <= max; i++) StorageService.addSearchHistory(`q${i}`);
     const history = StorageService.getSearchHistory();
     expect(history).toHaveLength(max);
@@ -564,12 +666,12 @@ describe('StorageService Watchlist store', () => {
   });
 
   it('toggles entries and lists them newest first', () => {
-    expect(StorageService.toggleWatchlist(watchlist({ itemId: '10', addedAt: 1000 }))).toBe(true);
-    expect(StorageService.toggleWatchlist(watchlist({ itemId: '11', addedAt: 2000 }))).toBe(true);
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: '10', addedAt: 1000 }))).toBe('added');
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: '11', addedAt: 2000 }))).toBe('added');
     expect(StorageService.getWatchlist('x1', 'vod').map((entry) => entry.itemId)).toEqual(['11', '10']);
     expect(StorageService.isWatchlisted('x1', 'vod', '10')).toBe(true);
 
-    expect(StorageService.toggleWatchlist(watchlist({ itemId: '10', addedAt: 3000 }))).toBe(false);
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: '10', addedAt: 3000 }))).toBe('removed');
     expect(StorageService.isWatchlisted('x1', 'vod', '10')).toBe(false);
   });
 
@@ -590,14 +692,41 @@ describe('StorageService Watchlist store', () => {
     expect(StorageService.getWatchlist('x2', 'vod')).toHaveLength(1);
   });
 
-  it('caps each account and content type at 200 entries', () => {
-    for (let i = 0; i < 205; i++) {
-      StorageService.toggleWatchlist(watchlist({ itemId: String(i), addedAt: i }));
+  it('refuses a new entry once an account and content type hold 200, keeping every saved one', () => {
+    const max = CONFIG.XTREAM.WATCHLIST_MAX_ITEMS;
+    for (let i = 0; i < max; i++) {
+      expect(StorageService.toggleWatchlist(watchlist({ itemId: String(i), addedAt: i }))).toBe('added');
     }
-    const entries = StorageService.getWatchlist('x1', 'vod');
-    expect(entries).toHaveLength(200);
-    expect(entries[0].itemId).toBe('204');
-    expect(entries[199].itemId).toBe('5');
+    const before = StorageService.getWatchlist('x1', 'vod');
+
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: 'new', addedAt: 10_000 }))).toBe('full');
+    expect(StorageService.getWatchlist('x1', 'vod')).toEqual(before);
+    expect(StorageService.isWatchlisted('x1', 'vod', 'new')).toBe(false);
+
+    // Other scopes still accept entries.
+    expect(StorageService.toggleWatchlist(watchlist({ kind: 'series', itemId: 'new' }))).toBe('added');
+    expect(StorageService.toggleWatchlist(watchlist({ accountId: 'x2', itemId: 'new' }))).toBe('added');
+
+    // Removing still works at the cap and frees one slot.
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: '0' }))).toBe('removed');
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: 'new', addedAt: 10_000 }))).toBe('added');
+    expect(StorageService.getWatchlist('x1', 'vod')).toHaveLength(max);
+  });
+
+  it('keeps an over-cap stored Watchlist intact and only refuses additions', () => {
+    const max = CONFIG.XTREAM.WATCHLIST_MAX_ITEMS;
+    const stored: Record<string, WatchlistEntry> = {};
+    for (let i = 0; i < max + 3; i++) {
+      const entry = watchlist({ itemId: String(i), addedAt: i });
+      stored[`x1|vod|${i}`] = entry;
+    }
+    localStorage.setItem('iptv_watchlist', JSON.stringify(stored));
+
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: 'new', addedAt: 10_000 }))).toBe('full');
+    expect(StorageService.getWatchlist('x1', 'vod')).toHaveLength(max + 3);
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: '0' }))).toBe('removed');
+    expect(StorageService.getWatchlist('x1', 'vod')).toHaveLength(max + 2);
+    expect(StorageService.toggleWatchlist(watchlist({ itemId: 'new', addedAt: 10_000 }))).toBe('full');
   });
 
   it('clears both content types for one account only', () => {
@@ -607,6 +736,21 @@ describe('StorageService Watchlist store', () => {
 
     StorageService.clearWatchlist('x1');
     expect(StorageService.getWatchlist('x1', 'vod')).toEqual([]);
+    expect(StorageService.getWatchlist('x1', 'series')).toEqual([]);
+    expect(StorageService.getWatchlist('x2', 'vod')).toHaveLength(1);
+  });
+
+  it('clears one content type for one account only', () => {
+    StorageService.toggleWatchlist(watchlist({ accountId: 'x1', kind: 'vod' }));
+    StorageService.toggleWatchlist(watchlist({ accountId: 'x1', kind: 'series' }));
+    StorageService.toggleWatchlist(watchlist({ accountId: 'x2', kind: 'vod' }));
+
+    StorageService.clearWatchlist('x1', 'vod');
+    expect(StorageService.getWatchlist('x1', 'vod')).toEqual([]);
+    expect(StorageService.getWatchlist('x1', 'series')).toHaveLength(1);
+    expect(StorageService.getWatchlist('x2', 'vod')).toHaveLength(1);
+
+    StorageService.clearWatchlist('x1', 'series');
     expect(StorageService.getWatchlist('x1', 'series')).toEqual([]);
     expect(StorageService.getWatchlist('x2', 'vod')).toHaveLength(1);
   });
@@ -649,6 +793,154 @@ describe('StorageService resume store', () => {
     expect(list.map((e) => e.itemId)).toEqual(['11', '10']);
     StorageService.clearResume('x1', 'vod', '11');
     expect(StorageService.getResumeList('x1').map((e) => e.itemId)).toEqual(['10']);
+  });
+
+  const ids = (accountId: string, kind: 'vod' | 'episode') =>
+    StorageService.getResumeList(accountId).filter(e => e.kind === kind).map(e => e.itemId);
+
+  it('keeps the newest 50 per account and kind, evicting the oldest', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    expect(max).toBe(50);
+    for (let i = 0; i < max; i++) {
+      StorageService.setResume(resume({ itemId: `m${i}`, updatedAt: 1000 + i }));
+      StorageService.setResume(resume({ kind: 'episode', itemId: `e${i}`, updatedAt: 1000 + i }));
+    }
+    StorageService.setResume(resume({ accountId: 'x2', itemId: 'm0', updatedAt: 1 }));
+
+    StorageService.setResume(resume({ itemId: 'm-new', updatedAt: 5000 }));
+    expect(ids('x1', 'vod')).toHaveLength(max);
+    expect(ids('x1', 'vod')[0]).toBe('m-new');
+    expect(StorageService.getResume('x1', 'vod', 'm0')).toBeNull();
+    expect(StorageService.getResume('x1', 'vod', 'm1')).not.toBeNull();
+    // Episodes and other accounts are separate scopes.
+    expect(ids('x1', 'episode')).toHaveLength(max);
+    expect(StorageService.getResume('x1', 'episode', 'e0')).not.toBeNull();
+    expect(StorageService.getResume('x2', 'vod', 'm0')).not.toBeNull();
+  });
+
+  it('updates an existing entry at the cap without evicting another', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    for (let i = 0; i < max; i++) {
+      StorageService.setResume(resume({ itemId: `m${i}`, updatedAt: 1000 + i }));
+    }
+    StorageService.setResume(resume({ itemId: 'm0', position: 200, updatedAt: 9000 }));
+    expect(ids('x1', 'vod')).toHaveLength(max);
+    expect(ids('x1', 'vod')[0]).toBe('m0');
+    expect(StorageService.getResume('x1', 'vod', 'm1')).not.toBeNull();
+  });
+
+  it('keeps the new write when it ties the oldest timestamps', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    for (let i = 0; i < max; i++) {
+      StorageService.setResume(resume({ itemId: `m${i}`, updatedAt: 1000 }));
+    }
+    StorageService.setResume(resume({ itemId: 'zz-new', updatedAt: 1000 }));
+    expect(ids('x1', 'vod')).toHaveLength(max);
+    expect(StorageService.getResume('x1', 'vod', 'zz-new')).not.toBeNull();
+  });
+
+  it('does not count a finished or too-short write toward the cap', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    for (let i = 0; i < max; i++) {
+      StorageService.setResume(resume({ itemId: `m${i}`, updatedAt: 1000 + i }));
+    }
+    StorageService.setResume(resume({ itemId: 'short', position: 5, updatedAt: 9000 }));
+    StorageService.setResume(resume({ itemId: 'done', position: 5990, duration: 6000, updatedAt: 9000 }));
+    expect(ids('x1', 'vod')).toHaveLength(max);
+    expect(StorageService.getResume('x1', 'vod', 'm0')).not.toBeNull();
+  });
+
+  it('trims an over-cap stored scope on the next write to it', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    const stored: Record<string, ResumeEntry> = {};
+    for (let i = 0; i < max + 5; i++) {
+      stored[`x1|vod|m${i}`] = resume({ itemId: `m${i}`, updatedAt: 1000 + i });
+    }
+    localStorage.setItem('iptv_resume', JSON.stringify(stored));
+    StorageService.setResume(resume({ itemId: 'm-new', updatedAt: 9000 }));
+    expect(ids('x1', 'vod')).toHaveLength(max);
+    expect(StorageService.getResume('x1', 'vod', 'm5')).toBeNull();
+    expect(StorageService.getResume('x1', 'vod', 'm6')).not.toBeNull();
+  });
+
+  const seedOverCap = () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    const stored: Record<string, ResumeEntry> = {};
+    for (let i = 0; i < max + 3; i++) {
+      stored[`x1|vod|m${i}`] = resume({ itemId: `m${i}`, updatedAt: 1000 + i });
+      stored[`x1|episode|e${i}`] = resume({ kind: 'episode', itemId: `e${i}`, updatedAt: 1000 + i });
+    }
+    stored['x2|vod|m0'] = resume({ accountId: 'x2', itemId: 'm0', updatedAt: 1 });
+    localStorage.setItem('iptv_resume', JSON.stringify(stored));
+  };
+  const storedResumeKeys = () =>
+    Object.keys(JSON.parse(localStorage.getItem('iptv_resume') ?? '{}') as object);
+
+  it('trims and persists an over-cap stored list on read, writing only once', () => {
+    const max = CONFIG.XTREAM.RESUME_MAX_ITEMS;
+    seedOverCap();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    try {
+      expect(StorageService.getResumeList('x1')).toHaveLength(max * 2);
+      const keys = storedResumeKeys();
+      expect(keys).toHaveLength(max * 2 + 1);
+      expect(keys).not.toContain('x1|vod|m2');
+      expect(keys).toContain('x1|vod|m3');
+      expect(keys).not.toContain('x1|episode|e2');
+      expect(keys).toContain('x2|vod|m0');
+      expect(setItem).toHaveBeenCalledTimes(1);
+
+      StorageService.getResumeList('x1');
+      expect(StorageService.getResume('x1', 'vod', 'm3')).not.toBeNull();
+      expect(setItem).toHaveBeenCalledTimes(1);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it('trims an over-cap stored list before a single-item read returns an evicted entry', () => {
+    seedOverCap();
+    expect(StorageService.getResume('x1', 'vod', 'm0')).toBeNull();
+    expect(storedResumeKeys()).not.toContain('x1|vod|m0');
+  });
+
+  it('trims the stored list when init falls back to localStorage', async () => {
+    seedOverCap();
+    vi.resetModules();
+    vi.doMock('./idb-database', async (importOriginal) => ({
+      ...await importOriginal<typeof import('./idb-database')>(),
+      openPersistenceDb: () => Promise.resolve(null),
+    }));
+    try {
+      const { StorageService: Fallback } = await import('./storage-service');
+      await Fallback.init();
+      const keys = storedResumeKeys();
+      expect(keys).toHaveLength(CONFIG.XTREAM.RESUME_MAX_ITEMS * 2 + 1);
+      expect(keys).not.toContain('x1|vod|m0');
+    } finally {
+      vi.doUnmock('./idb-database');
+      vi.resetModules();
+    }
+  });
+
+  it('clears one account\'s resume list, optionally by kind, leaving everything else', () => {
+    StorageService.setResume(resume({ itemId: '10' }));
+    StorageService.setResume(resume({ kind: 'episode', itemId: '20' }));
+    StorageService.setResume(resume({ accountId: 'x2', itemId: '10' }));
+    StorageService.toggleWatchlist(watchlist({ itemId: '10' }));
+    StorageService.touchRecentlyWatchedLive('ch1', 1000);
+
+    StorageService.clearResumeList('x1', 'vod');
+    expect(ids('x1', 'vod')).toEqual([]);
+    expect(ids('x1', 'episode')).toEqual(['20']);
+    expect(ids('x2', 'vod')).toEqual(['10']);
+
+    StorageService.setResume(resume({ itemId: '11' }));
+    StorageService.clearResumeList('x1');
+    expect(StorageService.getResumeList('x1')).toEqual([]);
+    expect(ids('x2', 'vod')).toEqual(['10']);
+    expect(StorageService.isWatchlisted('x1', 'vod', '10')).toBe(true);
+    expect(StorageService.getRecentlyWatchedLive().map(e => e.channelKey)).toEqual(['ch1']);
   });
 
   it('stores and reads a picked online subtitle', () => {

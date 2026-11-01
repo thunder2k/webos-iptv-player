@@ -202,6 +202,11 @@
   font-size: 26px;
 }
 
+.settings-item-value {
+  color: var(--text-primary);
+  font-size: 22px;
+}
+
 .settings-item-hint {
   margin-top: 8px;
   color: var(--text-muted);
@@ -227,7 +232,8 @@
   padding: 14px 20px;
 }
 
-.settings-advanced-row.focused {
+/* The row of the focused control, while Settings shows its focus. */
+#view-settings[data-ring-owner=""] .settings-advanced-row.is-current {
   background: rgb(var(--accent-rgb) / 0.06);
   box-shadow: inset 3px 0 var(--accent);
 }

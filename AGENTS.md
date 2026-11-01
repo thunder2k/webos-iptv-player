@@ -27,6 +27,8 @@ Procedural workflows live in `.agents/skills/` (open Agent Skills format;
 - Render with `morph()` + the `html` template — never `innerHTML =`.
   Interpolate untrusted M3U/XMLTV text only through `html`.
 - Every bug fix ships with a regression test that fails without the fix.
+- Add a `tv.sh diag` event only when a bug report could not show the
+  failure without it; no event beats a noisy one.
 - Tests and docs use synthetic identifiers only.
 - Never hand-edit the version in `appinfo.json` (it syncs from
   `package.json`), and never hand-edit the generated
@@ -39,6 +41,23 @@ Procedural workflows live in `.agents/skills/` (open Agent Skills format;
   feature-detected.
 - Chromium 38 treats a `scrollIntoView` options object as `true`;
   `src/polyfills.ts` fixes it, so never bypass or reimplement that call.
+- Only the surface that owns the keys shows a focus ring. Every surface
+  owns its focus through a scope on the `Focus` owner stack
+  (`src/navigation/focus-scope.ts`): the scope tracks its focused
+  `data-key`, and only the owner scope paints its ring, by key, after
+  every key, pointer move, push/pop, and `morph()`, so a re-render or a
+  virtualized list never loses it. A new modal or overlay registers a
+  scope at the right `Tier`, which both routes keys and picks the ring: a
+  prompt pushes itself while shown (as `ConfirmationPrompt` does). A
+  pushed modal keeps the pointer's hover outside it from the surfaces below.
+  A `SpatialNav` only picks and hands its pick to its scope; it never
+  paints. ESLint keeps the class behind
+  `setRing()`/`ringsIn()`; the only `focus/*` disable is the player OSD's
+  activity listener. Every E2E test fails when a key press
+  leaves two rings on screen. Hover never moves the keys, except that
+  the tab bar releases them to hovered
+  content; after a pointer tab click, `FocusRing.defer()` keeps the
+  content's ring hidden and the first key only shows it.
 - `bundled-service/` runs on Node.js 0.12.2: ES5/CommonJS, newer Node APIs
   via `compat.ts`, and `npm run service:smoke` after any change. Read
   `bundled-service/AGENTS.md` before changing the service or its Luna/HTTP
@@ -52,13 +71,14 @@ Procedural workflows live in `.agents/skills/` (open Agent Skills format;
 ```bash
 npm install                    # setup
 npm run typecheck              # tsc --noEmit (strict)
+npm run typecheck:all          # app + service + benchmarks typecheck
 npm run lint                   # stylelint + eslint Chromium 38 compat gate
 npm run build                  # typecheck + esbuild bundle into dist/
 npm run preview                # build + serve dist/ at http://localhost:3000
 npm test                       # vitest run (unit/integration)
 npm run test:watch             # vitest watch
 npm run test:e2e               # Playwright, 2 projects (see legacy-engine)
-npm run test:all               # lint + unit + e2e
+npm run test:all               # typecheck + lint + unit + e2e
 npm run screenshots            # regenerate README screenshots
 npm run service:smoke          # bundled service on real Node.js 0.12.2
 npm run service:smoke:matrix   # webOS 4-26 Node runtime matrix
@@ -77,9 +97,11 @@ and `tsc` strictness are real gates.
 
 ## CI
 
-`.github/workflows/build.yml` runs typecheck (app, `service`, **and**
-`benchmarks`), `npm run lint` and the compat gate, `vitest run`, the esbuild
-bundle, `service:smoke:matrix`, and packages the IPK. Pushes/PRs to `main`
+`.github/workflows/build.yml` runs a `check` job (`typecheck:all` —
+app, `service`, **and** `benchmarks`; `npm run lint` and the compat gate;
+`vitest run`) in parallel with Playwright E2E split across four `e2e`
+shards; once both pass, `package` runs the esbuild bundle,
+`service:smoke:matrix`, and packages the IPK. Pushes/PRs to `main`
 build; tagged `v*` pushes publish a GitHub release with the `.ipk`.
 
 ## Versioning
@@ -134,7 +156,13 @@ build constant; `scripts/sync-version.mjs` runs on `npm version`.
 - **Navigation** (`src/navigation/`) — `SpatialNav` does geometric D-pad
   focus among `[data-focusable]` elements (grouped by
   `[data-nav-container]`); `KeyHandler` also wires pointer/Magic Remote and
-  desktop mouse/wheel input.
+  desktop mouse/wheel input. `Focus` scopes (`focus-scope.ts`) own the
+  keys and paint the owner's ring by `data-key`, repainting it after every
+  `morph()`; `FocusRing` (`focus-ring.ts`) shows only the owner's ring and
+  marks the owner root `data-ring-owner` and `data-focus-scope` and
+  the hover target `data-ring-hover`, which the E2E ring audit reads.
+  `InputMode` (`input-mode.ts`) is the keys/pointer mode, written only
+  by `KeyHandler`.
 - **Parsers** (`src/parsers/`) — `parseM3U` / `parseXMLTV` are pure
   functions; keep them tolerant of messy real-world feeds.
 - **Config** (`src/config.ts`) — `CONFIG` holds key codes, refresh
@@ -210,6 +238,16 @@ build constant; `scripts/sync-version.mjs` runs on `npm version`.
   a review, the user, or anywhere else. Add the narrowest test that covers
   it (unit where possible, E2E for UI or focus behavior), and confirm it
   fails without the fix and passes with it.
+- **Add `tv.sh diag` events only where a bug report needs them.** Log a
+  state the report could not otherwise reveal: a failure or its reason, a
+  fallback taken, a detected engine capability, or a decision the code
+  made (mode, outcome, count). Don't log routine UI activity (show/hide,
+  focus moves, key presses already in the input timeline) or a success
+  that later events imply; a fix that leaves no failure state to observe
+  needs no event. Log once per occurrence that matters, never per frame
+  or per interaction. Use `createLogger` with `event=<area>.<what>` plus
+  `key=value` fields (never URLs, credentials, or M3U/XMLTV text), and
+  assert each event in a test.
 - **Done** means `npm run typecheck`, `npm run lint`, and the relevant tests
   pass. Then run the `feature-review` skill for any finished feature.
 - **Git:** commit directly to `main`, only when asked, via the `commit`

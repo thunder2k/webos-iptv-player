@@ -134,6 +134,32 @@ test('unified search matches channels, movies, and series; a channel result play
   await expect(page.locator('#view-player')).toBeVisible();
 });
 
+test('a query typed while the index prepares shows a hint, then its results', async ({ page }) => {
+  await seedSearch(page);
+  let releaseCatalog!: () => void;
+  const catalogHeld = new Promise<void>((resolve) => { releaseCatalog = resolve; });
+  await page.route(/get_vod_streams/, async (route) => {
+    await catalogHeld;
+    await route.fallback();
+  });
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+
+  await page.locator('.tab-bar-search-input').fill('one');
+  const hint = page.locator('#view-search .search-results .search-empty');
+  await expect(hint).toHaveText('Preparing search…');
+  await expect(page.locator('#view-search .catalog-tile')).toHaveCount(0);
+  await page.locator('.tab-bar-search-input').fill('zzz');
+  await expect(hint).toHaveText('Preparing search…');
+  await page.locator('.tab-bar-search-input').fill('one');
+
+  releaseCatalog();
+  await expect(page.locator('#view-search .catalog-tile[data-stream-id="10"]')).toContainText('Movie One');
+  await expect(page.locator('#view-search .catalog-tile[data-channel-index="0"]')).toContainText('Channel One');
+  await expect(page.locator('#view-search .search-empty')).toHaveCount(0);
+});
+
 test('a wide virtual search rail keeps its full scrollable width', async ({ page }) => {
   await seedSearch(page);
   await page.goto('/');
@@ -176,6 +202,10 @@ test('program search shows XMLTV metadata and toggles a future reminder', async 
   await expect(result).toContainText('Future Report');
   await expect(result).toContainText('Channel One');
   await expect(result).toContainText('Set reminder');
+  // Only the poster rails bleed; a list keeps both screen margins.
+  const box = await result.boundingBox();
+  expect(Math.round(box!.x)).toBe(80);
+  expect(Math.round(1920 - box!.x - box!.width)).toBe(80);
 
   await result.click();
   await expect(result).toContainText('Reminder set');
@@ -323,6 +353,50 @@ async function pressBack(page: import('@playwright/test').Page): Promise<void> {
     target.dispatchEvent(new KeyboardEvent('keydown', { keyCode: code, bubbles: true }));
   }, BACK);
 }
+
+test('a search finishing under an open account menu leaves the keys in the menu', async ({ page }) => {
+  await seedSearch(page);
+  await page.addInitScript(() => {
+    const playlists = JSON.parse(localStorage.getItem('iptv_playlists') ?? '[]');
+    playlists.push({ id: 'x2', name: 'Y Account', url: 'http://host.example.com:8080',
+      source: 'xtream', xtream: { username: 'v', password: 'q' } });
+    localStorage.setItem('iptv_playlists', JSON.stringify(playlists));
+    // Hold search queries on their way to the worker until the test lets them go.
+    const held: Array<() => void> = [];
+    const w = window as unknown as { holdQueries: boolean; releaseQueries: () => void };
+    w.holdQueries = false;
+    w.releaseQueries = () => { w.holdQueries = false; held.splice(0).forEach(post => post()); };
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (this: Worker, message: unknown, ...rest: unknown[]) {
+      const send = () => (post as (...args: unknown[]) => void).call(this, message, ...rest);
+      if (w.holdQueries && (message as { task?: string } | null)?.task === 'search.query') held.push(send);
+      else send();
+    };
+  });
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+  const input = page.locator('.tab-bar-search-input');
+  await input.fill('one');
+  await expect(page.locator('#view-search .catalog-tile[data-stream-id="10"]')).toContainText('Movie One');
+
+  await page.evaluate(() => { (window as unknown as { holdQueries: boolean }).holdQueries = true; });
+  await input.fill('zzz');
+  // Down waits for the query in flight, which matches nothing.
+  await input.press('ArrowDown');
+  await page.locator('.account-avatar').click();
+  const menu = page.locator('.account-menu');
+  await expect(menu).toBeVisible();
+  await page.evaluate(() => (window as unknown as { releaseQueries: () => void }).releaseQueries());
+  await expect(page.locator('#view-search .catalog-tile')).toHaveCount(0);
+
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.account-menu-item[data-account-id="x1"]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+  await page.keyboard.press('ArrowDown');
+  await expect(menu.locator('.account-menu-item[data-account-id="x2"]')).toHaveClass(/\bfocused\b/);
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
+});
 
 test('recent searches drop down over the current view, refill the query, and clear without confirming', async ({ page }) => {
   await seedSearch(page);
@@ -484,10 +558,12 @@ test('Back steps from recent searches and results to the box, then to the view s
   await pressBack(page);
   await expect(input).toBeFocused();
   await expect(page.locator('#view-search')).toBeVisible();
+  await expect(page.locator('#view-search .focused')).toHaveCount(0);
 
   await pressBack(page);
   await expect(page.locator('.tab-bar-search.expanded')).toHaveCount(0);
   await expect(page.locator('#view-epg')).toBeVisible();
+  await expect(page.locator('.focused:visible')).toHaveCount(1);
 });
 
 test('opening a search result records the query as a recent search', async ({ page }) => {
@@ -504,4 +580,179 @@ test('opening a search result records the query as a recent search', async ({ pa
   await page.keyboard.press('Enter');
   await expect(page.locator('#view-player')).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem('iptv_search_history'))).toBe('["one"]');
+});
+
+test('a poster clicked to dismiss the account menu over an empty search box still opens', async ({ page }) => {
+  await seedSearch(page);
+  await routeLiveManifest(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterTab(page, 'movies');
+  const poster = page.locator('#view-movies .catalog-tile[data-item-id="10"]');
+  await expect(poster).toContainText('Movie One');
+  await enterSearch(page);
+
+  await page.locator('.account-avatar').click();
+  await expect(page.locator('.account-menu')).toBeVisible();
+  await poster.click();
+  await expect(page.locator('.account-menu')).toHaveCount(0);
+  // The click's select reaches the poster instead of the refocused search box.
+  await expect(page.locator('#view-movies .detail-btn-primary')).toBeVisible();
+  await expect(page.locator('.search-history-panel')).toBeHidden();
+  await expect(page.locator('.tab-bar-item.focused, .account-avatar.focused')).toHaveCount(0);
+});
+
+test('a scrim click that dismisses the account menu leaves search like it does without the menu', async ({ page }) => {
+  await seedSearch(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('iptv_search_history', JSON.stringify(['one']));
+  });
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+  await expect(page.locator('.search-history-dropdown .search-history-panel')).toBeVisible();
+
+  await page.locator('.account-avatar').click();
+  await expect(page.locator('.account-menu')).toBeVisible();
+  const events: string[] = [];
+  page.on('console', (msg) => events.push(msg.text()));
+  await page.mouse.click(200, 800);
+  await expect(page.locator('.account-menu')).toHaveCount(0);
+  await expect(page.locator('.tab-bar-search.expanded')).toHaveCount(0);
+  await expect(page.locator('#view-channels')).toBeVisible();
+  // The bar's ring must not be left on the avatar, where Down reopens the menu.
+  await expect(page.locator('.account-avatar.focused')).toHaveCount(0);
+  // The click that dismisses search must not flash recent searches back open.
+  expect(events.some((text) => text.includes('event=search.box.collapsed reason=dismiss'))).toBe(true);
+  expect(events.filter((text) => text.includes('event=search.history.opened'))).toEqual([]);
+});
+
+for (const target of ['magnifier', 'Movies tab'] as const) {
+  test(`a ${target} click that dismisses the account menu does not flash recent searches`, async ({ page }) => {
+    await seedSearch(page);
+    await page.addInitScript(() => {
+      localStorage.setItem('iptv_search_history', JSON.stringify(['one']));
+    });
+    await page.goto('/');
+    await expect(page.locator('#view-channels')).toBeVisible();
+    await enterSearch(page);
+    await expect(page.locator('.search-history-dropdown .search-history-panel')).toBeVisible();
+
+    await page.locator('.account-avatar').click();
+    await expect(page.locator('.account-menu')).toBeVisible();
+    const events: string[] = [];
+    page.on('console', (msg) => events.push(msg.text()));
+    const item = target === 'magnifier'
+      ? page.locator('.tab-bar-item.search-icon')
+      : page.locator('.tab-bar-item[data-section="movies"]');
+    await item.click();
+    await expect(page.locator('.account-menu')).toHaveCount(0);
+    await expect(page.locator('.tab-bar-search.expanded')).toHaveCount(0);
+    expect(events.some((text) => text.includes('event=account.menu.closed reason=bar'))).toBe(true);
+    expect(events.filter((text) => text.includes('event=search.history.opened'))).toEqual([]);
+  });
+}
+
+test('a blank click that dismisses the account menu keeps the remote in the search box', async ({ page }) => {
+  await seedSearch(page);
+  await routeLiveManifest(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterTab(page, 'movies');
+  const heading = page.locator('#view-movies .catalog-rail-title').first();
+  await expect(heading).toBeVisible();
+  await enterSearch(page);
+
+  await page.locator('.account-avatar').click();
+  await expect(page.locator('.account-menu')).toBeVisible();
+  await heading.click();
+  await expect(page.locator('.account-menu')).toHaveCount(0);
+
+  // The click fired no select, so Back still closes search rather than
+  // reaching Movies underneath.
+  await pressBack(page);
+  await expect(page.locator('.tab-bar-search.expanded')).toHaveCount(0);
+  await expect(page.locator('#view-movies')).toBeVisible();
+});
+
+// Hover a row, then let the pointer leave it: the highlight hides but focus stays.
+async function hoverThenLeave(el: import('@playwright/test').Locator): Promise<void> {
+  await el.evaluate((node) => {
+    node.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    node.dispatchEvent(new CustomEvent('nav:unhover', { bubbles: true }));
+  });
+}
+
+test('after the pointer leaves a result, the first key shows it and the next one moves', async ({ page }) => {
+  await seedSearch(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+  await page.locator('.tab-bar-search-input').fill('channel');
+  const tile = (index: number) => page.locator(`#view-search .catalog-tile[data-channel-index="${String(index)}"]`);
+  await expect(tile(1)).toBeVisible();
+  await page.locator('.tab-bar-search-input').press('ArrowDown');
+  // Step along the channel results, which search moves through by itself.
+  const section = await tile(0).evaluate((el) =>
+    el.closest<HTMLElement>('[data-search-section]')?.dataset.searchSection ?? '');
+  const along = section === 'channels-rail' ? 'ArrowRight' : 'ArrowDown';
+  await hoverThenLeave(tile(0));
+  await expect(page.locator('#view-search .focused')).toHaveCount(0);
+
+  await page.keyboard.press(along);
+  await expect(tile(0)).toHaveClass(/\bfocused\b/);
+  await page.keyboard.press(along);
+  await expect(tile(1)).toHaveClass(/\bfocused\b/);
+});
+
+test('Up back to the box leaves no ring on a result, while typing too', async ({ page }) => {
+  await seedSearch(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+  const input = page.locator('.tab-bar-search-input');
+  await input.fill('on');
+  const tile = page.locator('#view-search .catalog-tile[data-channel-index="0"]');
+  await expect(tile).toContainText('Channel One');
+  await input.press('ArrowDown');
+  await expect(page.locator('#view-search .focused')).toHaveCount(1);
+
+  for (let i = 0; i < 4; i++) {
+    if (await input.evaluate((el) => el === document.activeElement)) break;
+    await page.keyboard.press('ArrowUp');
+  }
+  await expect(input).toBeFocused();
+  await expect(page.locator('#view-search .focused')).toHaveCount(0);
+  await page.keyboard.type('e');
+  await expect(page.locator('#view-search [data-search-query]')).toHaveAttribute('data-search-query', 'one');
+  await expect(tile).toBeVisible();
+  await expect(page.locator('#view-search .focused')).toHaveCount(0);
+});
+
+test('Down from the box after Up rings a result at once, and one Right moves', async ({ page }) => {
+  await seedSearch(page);
+  await page.goto('/');
+  await expect(page.locator('#view-channels')).toBeVisible();
+  await enterSearch(page);
+  const input = page.locator('.tab-bar-search-input');
+  await input.fill('one');
+  await expect(page.locator('#view-search .catalog-tile[data-stream-id="10"]')).toContainText('Movie One');
+  await input.press('ArrowDown');
+  const focused = page.locator('#view-search .focused');
+  await expect(focused).toHaveCount(1);
+  const first = await focused.getAttribute('data-key');
+
+  for (let i = 0; i < 4; i++) {
+    if (await input.evaluate((el) => el === document.activeElement)) break;
+    await page.keyboard.press('ArrowUp');
+  }
+  await expect(input).toBeFocused();
+  await expect(focused).toHaveCount(0);
+
+  await input.press('ArrowDown');
+  await expect(focused).toHaveCount(1);
+  await expect(focused).toHaveAttribute('data-key', first ?? '');
+  await page.keyboard.press('ArrowRight');
+  await expect(focused).toHaveCount(1);
+  await expect(focused).not.toHaveAttribute('data-key', first ?? '');
 });

@@ -60,8 +60,6 @@ const log = createLogger('Player');
 // setSubtitleEnable (channel selection is impossible — selectTrack decode-freezes).
 const CC_SUBTITLE_INDEX = -2;
 
-// Sentinel for the "Search online…" subtitle row, which opens the search overlay.
-const SEARCH_ONLINE_INDEX = -3;
 
 // Base for the synthetic picker indices of ASS/SSA sidecars, which can't surface
 // as native <track>s (assjs draws them). Kept high so it never collides with a
@@ -165,6 +163,22 @@ export class PlayerTracks {
     return true;
   }
 
+  isSubtitleSearchOpen(): boolean {
+    return !!this.subsOverlay?.visible;
+  }
+
+  // Whether one of the app's own subtitle renderers created this track.
+  ownsTextTrack(track: TextTrack): boolean {
+    return this.subs.owns(track) || this.dashSubs.owns(track) || this.vodSubs.owns(track);
+  }
+
+  // In-container text tracks, without the app's own renderer tracks.
+  nativeTextTrackCount(list: TextTrackList | undefined): number {
+    let count = 0;
+    for (let i = 0; list && i < list.length; i++) if (!this.ownsTextTrack(list[i])) count++;
+    return count;
+  }
+
   /** Dismiss the online subtitle-search overlay if it is open. Called on every
    *  view transition (App.showView) so it never lingers over another view or
    *  reappears when its player view is shown again. */
@@ -184,14 +198,6 @@ export class PlayerTracks {
   openSubtitleOffset(): void {
     const overlay = this.ensureOffsetOverlay();
     if (overlay) overlay.open(this.subtitleOffsetS);
-  }
-
-  subtitleOffsetOpen(): boolean {
-    return this.offsetOverlay?.visible === true;
-  }
-
-  handleSubtitleOffsetAction(action: Action): void {
-    this.offsetOverlay?.handleAction(action);
   }
 
   /** Dismiss the subtitle-sync adjuster (called on every view transition). */
@@ -249,8 +255,7 @@ export class PlayerTracks {
     if (list) for (let i = 0; i < list.length; i++) {
       const track = list[i];
       if (track.kind !== 'subtitles' && track.kind !== 'captions') continue;
-      if (this.subs.owns(track) || this.dashSubs.owns(track)
-          || this.vodSubs.owns(track)) continue; // an engine already shifted these
+      if (this.ownsTextTrack(track)) continue; // an engine already shifted these
       shiftForeignTrack(track, seconds);
     }
   }
@@ -290,7 +295,11 @@ export class PlayerTracks {
     };
   }
 
-  private async openSubtitleSearch(): Promise<void> {
+  subtitleSearchAvailable(): boolean {
+    return !!this.options.getVod() && subtitleSearchService.isAvailable();
+  }
+
+  async openSubtitleSearch(): Promise<void> {
     const overlay = this.ensureSubsOverlay();
     const vod = this.options.getVod();
     if (!overlay || !vod) return;
@@ -609,14 +618,6 @@ export class PlayerTracks {
         available: true,
       });
     }
-    if (this.options.getVod() && subtitleSearchService.isAvailable()) {
-      tracks.push({
-        index: SEARCH_ONLINE_INDEX,
-        label: t('player.searchOnline'),
-        active: false,
-        available: true,
-      });
-    }
     return tracks;
   }
 
@@ -630,10 +631,6 @@ export class PlayerTracks {
    *  for this channel. No-op for a grayed (unavailable) track the platform didn't
    *  expose. CC and the other subtitle paths are mutually exclusive. */
   selectSubtitleTrack(index: number): void {
-    if (index === SEARCH_ONLINE_INDEX) {
-      void this.openSubtitleSearch();
-      return;
-    }
     if (index === CC_SUBTITLE_INDEX) {
       this.subs.stop(); // self-render and the native compositor can't both draw
       this.dashSubs.stop();

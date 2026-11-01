@@ -71,7 +71,7 @@ process lifetime effects vary between runs.
 | Movies | Category load, 50,000-item grid load, DOM size, and navigation |
 | Series | Category/grid/detail load, grid navigation, and episode navigation |
 | Parental Controls | Live group selection and the 50,000-category VOD manager — category/item load, bounded DOM and extents in both columns, item and group navigation, and lock toggling |
-| Search | Separate Xtream and M3U-only reloads with program-index construction and broad/sparse/no-match query distributions |
+| Search | Separate Xtream and M3U-only reloads with program-index construction, the main-thread cost of building the worker index after open, and broad/sparse/no-match query distributions |
 | Interaction transitions | Rapid wheel-to-D-pad handoff, trusted Magic Remote-style pointer activation, connected focus, EPG channel/date changes, and non-empty virtual windows |
 | Frame/long tasks | Action-to-next-frame distributions, frames over 50ms, and Long Tasks observed during the suites |
 | Stress watchdog | Maximum event-loop heartbeat gap and explicit post-interaction document liveness |
@@ -111,6 +111,27 @@ runner injects its separate Chrome-68-compatible parser bundle. The shipped app
 bundle contains no benchmark API.
 The M3U-only reload asserts that Movies and Series are absent, then repeats the
 channel, program, and no-match shapes without catalog ranking.
+
+`search.{xtream,m3u}.indexBuild` follows the main thread from opening Search
+on a cold index — no stored `search-index-cache` record and no running app
+worker — until `event=search.worker.index.ready`: the wall time
+(`readyMs`), the longest animation-frame gap (`maxFrameGapMs`), Long Task
+count/total/max, and the synchronous time spent in `postMessage` for every
+`search.index` payload (`postMs`, `posts`, and `postBySource`, which
+attributes each post to the channel, programme, movie, and series sources it
+carries, posted or read from IndexedDB). `cacheFallbacks` lists any
+`event=search.worker.cache.fallback` the app logged, where the worker could
+not read or verify a source from IndexedDB and the page posted its documents
+instead; it should be empty for the seeded caches. `built` counts the source
+indexes the worker built rather than loaded. The frame gap, Long Task total,
+and post time are regression-gated.
+
+`search.{xtream,m3u}.indexBuildWarm` repeats the same open once the cold
+open's source indexes are stored (`storedIndexes`) and its worker has exited,
+so the new worker loads every index from IndexedDB (`built` must be 0). Before
+each sample the benchmark waits past the startup prewarm and until no stored
+index changes and the app worker has exited; the cold sample then clears the
+store. Its frame gap and Long Task total are regression-gated.
 
 ## Baselines
 

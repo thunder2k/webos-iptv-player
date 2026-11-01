@@ -23,6 +23,122 @@ import {
   serializeCdpLogEvent,
   subscribeCdpLogs,
 } from './cdp-logs.mjs';
+import { formatOptions, parseArgs } from './cli-args.mjs';
+
+const DEFAULT_APP_ID = 'com.lennylxx.iptv';
+
+export const PERFORMANCE_SPEC = {
+  maxPositionals: 0,
+  options: {
+    host: {
+      type: 'string',
+      default: null,
+      valueName: '<host>',
+      description: 'CDP discovery host (default: configured TV device)',
+    },
+    port: {
+      type: 'integer',
+      min: 1,
+      max: 65535,
+      default: 9998,
+      valueName: '<port>',
+      description: 'CDP discovery port',
+    },
+    url: {
+      type: 'string',
+      default: null,
+      valueName: '<url>',
+      description: 'CDP discovery or direct WebSocket URL',
+    },
+    app: {
+      type: 'string',
+      valueName: '<id>',
+      description: 'webOS app id to target (TV DevTools page selection)',
+    },
+    target: {
+      type: 'string',
+      valueName: '<filter>',
+      description: 'Page target id, title, description, or URL filter',
+    },
+    interval: {
+      type: 'number',
+      positive: true,
+      default: 1,
+      valueName: '<seconds>',
+      description: 'Sampling interval in seconds',
+    },
+    duration: {
+      type: 'number',
+      positive: true,
+      default: null,
+      valueName: '<seconds>',
+      description: 'Stop after the given duration',
+    },
+    jsonl: {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'Record samples as JSONL',
+    },
+    csv: {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'Record samples as CSV',
+    },
+    'redacted-logs': {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'Record shareable console, exception, and browser logs; '
+        + 'with CPU/trace capture, retain 30s before the trigger',
+    },
+    'cpu-profile': {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'At 80% CPU for 3s, record six 5s .cpuprofile parts',
+    },
+    trace: {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'At 80% CPU for 3s, record six 5s Chrome Trace parts',
+    },
+    'collect-garbage': {
+      type: 'boolean',
+      default: false,
+      description: 'Force a garbage collection and exit',
+    },
+    snapshot: {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'Capture a heap snapshot to <path> and exit',
+    },
+    'allocation-snapshot': {
+      type: 'string',
+      default: null,
+      valueName: '<path>',
+      description: 'Record allocation stacks, then write a heap snapshot',
+    },
+    'gc-before': {
+      type: 'boolean',
+      default: false,
+      description: 'With a snapshot mode, force garbage collection first',
+    },
+    help: { type: 'boolean', short: 'h', default: false, description: 'Show this help' },
+  },
+};
+
+export const PERFORMANCE_HELP = `Usage: node scripts/tv-perf.mjs [--app <id>] [options]
+
+Sample a webOS app's performance counters (CPU, JS heap, DOM nodes, listeners)
+over the Chrome DevTools Protocol, capture CPU profiles, timeline traces, or
+heap snapshots, and force GC.
+
+${formatOptions(PERFORMANCE_SPEC)}
+`;
 
 // ---------------------------------------------------------------------------
 // Pure metric + argument logic (no I/O). Isolated as functions and exported so
@@ -39,7 +155,6 @@ const CPU_PROFILE_PART_COUNT = CPU_PROFILE_DURATION_MS / CPU_PROFILE_PART_DURATI
 const LOG_PRETRIGGER_MS = 30000;
 const LOG_PRETRIGGER_MAX_ENTRIES = 1000;
 const TRACE_BUFFER_SIZE_KB = 4096;
-const DEFAULT_APP_ID = 'com.lennylxx.iptv';
 const TRACE_CATEGORY_CANDIDATES = [
   'devtools.timeline',
   'blink.user_timing',
@@ -91,61 +206,13 @@ const asFiniteNumber = (value) => {
   return null;
 };
 
-const parseRequiredStringValue = (argv, index, flag) => {
-  if (index + 1 >= argv.length) {
-    throw new Error(`Missing value for ${flag}.`);
-  }
-
-  const value = argv[index + 1];
-  if (typeof value === 'string' && value.startsWith('-')) {
-    throw new Error(`Missing value for ${flag}.`);
-  }
-
-  return value;
-};
-
-const parseRequiredNumericValue = (argv, index, flag) => {
-  if (index + 1 >= argv.length) {
-    throw new Error(`Missing value for ${flag}.`);
-  }
-
-  const value = argv[index + 1];
-  if (typeof value === 'string' && value.startsWith('-') && !Number.isFinite(Number(value))) {
-    throw new Error(`Missing value for ${flag}.`);
-  }
-
-  return value;
-};
-
-const parsePositiveInteger = (value, flag, { max = Number.POSITIVE_INFINITY } = {}) => {
-  const numeric = Number(value);
-  if (!Number.isInteger(numeric) || numeric <= 0 || numeric > max) {
-    throw new Error(`Invalid value for ${flag}.`);
-  }
-
-  return numeric;
-};
-
-const parsePositiveMilliseconds = (value, flag) => {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    throw new Error(`Invalid value for ${flag}.`);
-  }
-
-  const milliseconds = Math.round(numeric * 1000);
+const secondsToMilliseconds = (seconds, flag) => {
+  const milliseconds = Math.round(seconds * 1000);
   if (milliseconds <= 0) {
     throw new Error(`Invalid value for ${flag}.`);
   }
 
   return milliseconds;
-};
-
-const parseNonEmptyString = (value, flag) => {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Invalid value for ${flag}.`);
-  }
-
-  return value;
 };
 
 const buildSerializableSample = (sample) => {
@@ -246,121 +313,40 @@ const nextStatePair = (current, previousPair, currentTimestamp) => {
 };
 
 export function parsePerformanceArgs(argv = []) {
+  const { values, seen } = parseArgs(argv, PERFORMANCE_SPEC);
+  const appId = values.app ?? DEFAULT_APP_ID;
+  // Whichever of --app and --target comes last picks the page.
+  const strictTarget = seen.filter((name) => name === 'app' || name === 'target').at(-1) === 'target';
+  const sawCollectGarbage = values['collect-garbage'];
+  const sawSnapshot = values.snapshot != null;
+  const sawAllocationSnapshot = values['allocation-snapshot'] != null;
+  let mode = 'monitor';
+  if (sawCollectGarbage) mode = 'gc';
+  if (sawSnapshot) mode = 'snapshot';
+  if (sawAllocationSnapshot) mode = 'allocation-snapshot';
+
   const options = {
-    host: null,
-    port: 9998,
-    url: null,
-    target: DEFAULT_APP_ID,
-    appId: DEFAULT_APP_ID,
-    targetSelection: 'legacy-tv-app',
-    intervalMs: 1000,
-    durationMs: null,
-    jsonlPath: null,
-    csvPath: null,
-    redactedLogsPath: null,
-    cpuProfilePath: null,
-    tracePath: null,
-    mode: 'monitor',
-    snapshotPath: null,
-    allocationSnapshotPath: null,
-    gcBefore: false,
-    help: false,
+    host: values.host,
+    port: values.port,
+    url: values.url,
+    target: strictTarget ? values.target : appId,
+    appId,
+    targetSelection: strictTarget ? 'strict' : 'legacy-tv-app',
+    intervalMs: secondsToMilliseconds(values.interval, '--interval'),
+    durationMs: values.duration == null
+      ? null
+      : secondsToMilliseconds(values.duration, '--duration'),
+    jsonlPath: values.jsonl,
+    csvPath: values.csv,
+    redactedLogsPath: values['redacted-logs'],
+    cpuProfilePath: values['cpu-profile'],
+    tracePath: values.trace,
+    mode,
+    snapshotPath: values.snapshot,
+    allocationSnapshotPath: values['allocation-snapshot'],
+    gcBefore: values['gc-before'],
+    help: values.help,
   };
-
-  let sawCollectGarbage = false;
-  let sawSnapshot = false;
-  let sawAllocationSnapshot = false;
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-
-    switch (token) {
-      case '--host':
-        options.host = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--port':
-        options.port = parsePositiveInteger(parseRequiredNumericValue(argv, index, token), token, { max: 65535 });
-        index += 1;
-        break;
-      case '--url':
-        options.url = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--target':
-        options.target = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        options.targetSelection = 'strict';
-        index += 1;
-        break;
-      case '--app':
-        options.appId = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        options.target = options.appId;
-        options.targetSelection = 'legacy-tv-app';
-        index += 1;
-        break;
-      case '--interval':
-        options.intervalMs = parsePositiveMilliseconds(parseRequiredNumericValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--duration':
-        options.durationMs = parsePositiveMilliseconds(parseRequiredNumericValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--jsonl':
-        options.jsonlPath = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--csv':
-        options.csvPath = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--redacted-logs':
-        options.redactedLogsPath = parseNonEmptyString(
-          parseRequiredStringValue(argv, index, token),
-          token,
-        );
-        index += 1;
-        break;
-      case '--cpu-profile':
-        options.cpuProfilePath = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--trace':
-        options.tracePath = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--collect-garbage':
-        options.mode = 'gc';
-        sawCollectGarbage = true;
-        break;
-      case '--snapshot':
-        options.mode = 'snapshot';
-        sawSnapshot = true;
-        options.snapshotPath = parseNonEmptyString(parseRequiredStringValue(argv, index, token), token);
-        index += 1;
-        break;
-      case '--allocation-snapshot':
-        options.mode = 'allocation-snapshot';
-        sawAllocationSnapshot = true;
-        options.allocationSnapshotPath = parseNonEmptyString(
-          parseRequiredStringValue(argv, index, token),
-          token,
-        );
-        index += 1;
-        break;
-      case '--gc-before':
-        options.gcBefore = true;
-        break;
-      case '--help':
-        options.help = true;
-        break;
-      default:
-        if (token.startsWith('-')) {
-          throw new Error(`Unknown option: ${token}`);
-        }
-        throw new Error(`Unexpected argument: ${token}`);
-    }
-  }
 
   if (options.gcBefore && !sawSnapshot && !sawAllocationSnapshot) {
     throw new Error('--gc-before requires --snapshot or --allocation-snapshot.');
@@ -491,34 +477,6 @@ export function formatMonitorTarget(target) {
 // ---------------------------------------------------------------------------
 // Runtime: CDP connection, recording, heap snapshots, and the CLI entry point.
 // ---------------------------------------------------------------------------
-
-const HELP_TEXT = `Usage: node scripts/tv-perf.mjs [--app <id>] [options]
-
-Sample a webOS app's performance counters (CPU, JS heap, DOM nodes, listeners)
-over the Chrome DevTools Protocol, capture CPU profiles, timeline traces, or
-heap snapshots, and force GC.
-
-Options:
-  --host <host>          CDP discovery host (default: configured TV device)
-  --port <port>          CDP discovery port (default: 9998)
-  --url <url>            CDP discovery or direct WebSocket URL
-  --app <id>             webOS app id to target (TV DevTools page selection)
-  --target <filter>      Page target id, title, description, or URL filter
-  --interval <seconds>   Sampling interval in seconds (default: 1)
-  --duration <seconds>   Stop after the given duration
-  --jsonl <path>         Record samples as JSONL
-  --csv <path>           Record samples as CSV
-  --redacted-logs <path> Record shareable console, exception, and browser logs;
-                         with CPU/trace capture, retain 30s before the trigger
-  --cpu-profile <path>   At 80% CPU for 3s, record six 5s .cpuprofile parts
-  --trace <path>         At 80% CPU for 3s, record six 5s Chrome Trace parts
-  --collect-garbage      Force a garbage collection and exit
-  --snapshot <path>      Capture a heap snapshot to <path> and exit
-  --allocation-snapshot <path>
-                         Record allocation stacks, then write a heap snapshot
-  --gc-before            With a snapshot mode, force garbage collection first
-  --help                 Show this help
-`;
 
 const toError = (value) => {
   if (value instanceof Error) return value;
@@ -1354,7 +1312,7 @@ export async function main(argv, dependencies = {}) {
   }
 
   if (options.help) {
-    await writeChunk(stdout, HELP_TEXT);
+    await writeChunk(stdout, PERFORMANCE_HELP);
     return 0;
   }
 

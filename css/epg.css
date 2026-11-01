@@ -178,6 +178,11 @@
   cursor: pointer;
 }
 
+.epg-filter-control:hover {
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+
 .epg-filter-control.active {
   color: var(--accent);
 }

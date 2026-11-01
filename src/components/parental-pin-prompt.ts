@@ -4,6 +4,7 @@ import { t, tp } from '../i18n';
 import { html, raw } from '../utils/dom';
 import { LOCK_ICON } from './icons';
 import { morph } from '../utils/morph';
+import { Focus, Tier, type FocusScope } from '../navigation/focus-scope';
 import { ParentalControlService } from '../services/parental-control';
 import { createLogger } from '../utils/logger';
 
@@ -29,6 +30,8 @@ export class ParentalPinPrompt {
   private blockedUntil = 0;
   private blockedInMinutes = false;
   private blockTimer: number | null = null;
+  // Registered on the first open; the field and Cancel keep native focus.
+  private scope: FocusScope | null = null;
 
   constructor() {
     this.el = document.createElement('div');
@@ -99,6 +102,7 @@ export class ParentalPinPrompt {
     this.session++;
     this.stopBlock();
     this.el.classList.add('hidden');
+    if (this.scope) Focus.pop(this.scope);
     this.clearInput();
     this.error = '';
     this.firstPin = '';
@@ -143,11 +147,21 @@ export class ParentalPinPrompt {
   private open(): void {
     log.info('PIN prompt opened', 'event=parental.prompt.opened', `mode=${this.mode}`,
       `replacing=${String(this.replacing)}`, `wasVisible=${String(this.visible)}`);
+    if (!this.scope) {
+      this.scope = Focus.register({
+        id: 'prompt.parental_pin',
+        root: this.el,
+        restrict: 'self-only',
+        tier: Tier.critical,
+        onAction: (action, event) => this.handleAction(action, event),
+      });
+    }
     this.session++;
     this.submitting = false;
     this.error = '';
     this.stopBlock();
     this.el.classList.remove('hidden');
+    Focus.push(this.scope);
     this.render();
     this.clearInput();
     const blockedForMs = this.mode === 'challenge' || this.mode === 'verify'

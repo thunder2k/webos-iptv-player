@@ -10,6 +10,10 @@
 //
 // Imported right after polyfills in src/app.ts only; the worker has no layout.
 
+import { createLogger } from './utils/logger';
+
+const log = createLogger('Quirks');
+
 export interface EngineQuirks {
   scrollEndPadding: boolean;
   noFlexGap: boolean;
@@ -75,6 +79,12 @@ export function applyEngineQuirks(quirks: EngineQuirks, root: Element): void {
     else root.classList.remove(QUIRK_CLASSES[name]);
   });
   root.classList.add(MEASURED_CLASS);
+  log.info(
+    'Engine quirks measured',
+    'event=engine.quirks.measured',
+    `scrollEndPadding=${quirks.scrollEndPadding ? 1 : 0}`,
+    `noFlexGap=${quirks.noFlexGap ? 1 : 0}`,
+  );
 }
 
 if (typeof document !== 'undefined') {

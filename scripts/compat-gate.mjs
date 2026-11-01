@@ -35,8 +35,10 @@ if (!Object.getOwnPropertyDescriptors) {
 //                              bundle scan only (eslint compat covers source)
 //              'worker-option' → a module Worker/SharedWorker constructor option;
 //                                bundle scan plus a dedicated eslint rule
-//              'postmessage-option' → object-form `postMessage` transfer options
-//              'listener-option' → AbortSignal-backed event-listener options
+//              'call-option' → an option-object property a post-53 engine
+//                              added to an existing call; Chromium 53 ignores
+//                              or misreads it. Needs `call` (method name),
+//                              `arg` (argument index) and `property`
 //   object     for static or nested constructor APIs: the owning built-in
 //              (e.g. 'Promise' or 'Intl')
 //   minChrome  first Chrome version shipping the API (for messages)
@@ -52,8 +54,10 @@ if (!Object.getOwnPropertyDescriptors) {
 export const DENYLIST = [
   // --- unsupported constructor options ---
   { name: 'module worker', kind: 'worker-option', minChrome: 80, message: 'Module workers are Chrome 80+ — bundle the worker as a classic script.' },
-  { name: 'postMessage transfer options', kind: 'postmessage-option', minChrome: 79, message: 'Object-form postMessage transfer options are Chrome 79+ — pass the transfer list array as the second argument.' },
-  { name: 'abortable event listener', kind: 'listener-option', minChrome: 88, message: 'addEventListener({ signal }) is Chrome 88+ — remove the listener explicitly.' },
+  { name: 'postMessage transfer options', kind: 'call-option', call: 'postMessage', arg: 1, property: 'transfer', minChrome: 79, message: 'Object-form postMessage transfer options are Chrome 79+ — pass the transfer list array as the second argument.' },
+  { name: 'once event listener', kind: 'call-option', call: 'addEventListener', arg: 2, property: 'once', minChrome: 55, message: 'addEventListener({ once }) is Chrome 55+ — Chromium 53 ignores once and keeps the listener; remove it explicitly.' },
+  { name: 'abortable event listener', kind: 'call-option', call: 'addEventListener', arg: 2, property: 'signal', minChrome: 88, message: 'addEventListener({ signal }) is Chrome 88+ — remove the listener explicitly.' },
+  { name: 'focus preventScroll', kind: 'call-option', call: 'focus', arg: 0, property: 'preventScroll', minChrome: 64, message: 'focus({ preventScroll }) is Chrome 64+ — Chromium 53 ignores it and scrolls; use focusWithoutScroll from src/utils/dom.ts.' },
   // --- unsupported constructors ---
   { name: 'AbortController', kind: 'constructor', minChrome: 66, message: 'AbortController is Chrome 66+ — use the guarded project polyfill.' },
   { name: 'PluralRules', kind: 'constructor', object: 'Intl', minChrome: 63, message: 'Intl.PluralRules is Chrome 63+ — use the guarded project polyfill.' },
@@ -114,6 +118,8 @@ export const DENYLIST = [
 // Note: the AST scanner only flags call sites and already ignores `typeof x`
 // feature-detection guards, so 'guarded' usages rarely need an entry here
 // (e.g. fflate's guarded queueMicrotask is not flagged and needs no allowlist).
+// `maxCount` limits the exemption to that many call sites per bundle, so a
+// guarded first-party call does not also hide a dependency's unguarded one.
 export const ALLOWLIST = [
   { name: 'fetch', reason: 'polyfilled', note: 'src/polyfills.ts installs an XMLHttpRequest-based fetch polyfill on Chromium 38.' },
   { name: 'assign', reason: 'polyfilled', note: 'src/polyfills.ts installs a guarded Object.assign on Chromium 38.' },
@@ -137,6 +143,7 @@ export const ALLOWLIST = [
   { name: 'WeakSet', reason: 'polyfilled', note: 'src/polyfills.ts installs a minimal WeakSet polyfill for Chromium 38.' },
   { name: 'closest', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Element.prototype.closest for Chromium 38.' },
   { name: 'matches', reason: 'polyfilled', note: 'src/polyfills.ts installs guarded Element.prototype.matches for Chromium 38.' },
+  { name: 'focus preventScroll', reason: 'guarded', maxCount: 1, note: 'focusWithoutScroll in src/utils/dom.ts passes it only after detecting that the engine reads it.' },
 ];
 
 // Scan bundled JS for post-38 APIs using a real AST (TypeScript's parser, a
@@ -181,7 +188,7 @@ function globalExpressionName(node) {
 function objectProperty(node, wanted) {
   if (!node || !ts.isObjectLiteralExpression(node)) return false;
   for (const property of node.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
+    if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) continue;
     const name = ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
       ? property.name.text
       : undefined;
@@ -193,28 +200,28 @@ function objectProperty(node, wanted) {
 function hasLiteralObjectProperty(node, name, value) {
   const property = objectProperty(node, name);
   return !!property
+    && ts.isPropertyAssignment(property)
     && ts.isStringLiteralLike(property.initializer)
     && property.initializer.text === value;
 }
 
 export function scanBundle(code, { denylist = DENYLIST, allowlist = ALLOWLIST } = {}) {
-  const allowed = new Set(allowlist.map((a) => a.name));
-  const active = denylist.filter((e) => e.scanBundle !== false && !allowed.has(e.name));
+  const allowed = new Map(allowlist.map((a) => [a.name, a]));
+  const active = denylist.filter((e) => e.scanBundle !== false
+    && (!allowed.has(e.name) || allowed.get(e.name).maxCount !== undefined));
   const methods = new Map(); // name -> entry
   const statics = new Map(); // `${object}.${name}` -> entry
   const globals = new Map(); // name -> entry
   const constructors = new Map(); // global constructor name -> entry
   let moduleWorker;
-  let postMessageOptions;
-  let listenerOptions;
+  const callOptions = [];
   for (const e of active) {
     if (e.kind === 'method') methods.set(e.name, e);
     else if (e.kind === 'static') statics.set(`${e.object}.${e.name}`, e);
     else if (e.kind === 'global') globals.set(e.name, e);
     else if (e.kind === 'constructor') constructors.set(e.object ? `${e.object}.${e.name}` : e.name, e);
     else if (e.kind === 'worker-option') moduleWorker = e;
-    else if (e.kind === 'postmessage-option') postMessageOptions = e;
-    else if (e.kind === 'listener-option') listenerOptions = e;
+    else if (e.kind === 'call-option') callOptions.push(e);
   }
 
   const counts = new Map();
@@ -244,15 +251,10 @@ export function scanBundle(code, { denylist = DENYLIST, allowlist = ALLOWLIST } 
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const calledName = ts.isIdentifier(callee) ? callee.text : calledPropName(callee);
-      if (postMessageOptions
-          && calledName === 'postMessage'
-          && objectProperty(node.arguments[1], 'transfer')) {
-        bump(postMessageOptions);
-      }
-      if (listenerOptions
-          && calledName === 'addEventListener'
-          && objectProperty(node.arguments[2], 'signal')) {
-        bump(listenerOptions);
+      for (const option of callOptions) {
+        if (calledName === option.call && objectProperty(node.arguments[option.arg], option.property)) {
+          bump(option);
+        }
       }
       if (ts.isIdentifier(callee)) {
         const g = globals.get(callee.text);
@@ -278,7 +280,8 @@ export function scanBundle(code, { denylist = DENYLIST, allowlist = ALLOWLIST } 
   const violations = [];
   for (const entry of denylist) {
     const count = counts.get(entry);
-    if (count) {
+    const maxCount = allowed.get(entry.name)?.maxCount ?? 0;
+    if (count && count > maxCount) {
       violations.push({
         name: entry.name,
         kind: entry.kind,

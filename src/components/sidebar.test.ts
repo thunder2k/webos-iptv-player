@@ -4,7 +4,7 @@ import type { Channel } from '../types';
 import type { RecentlyWatchedItem } from '../services/recently-watched';
 import { CONFIG } from '../config';
 
-const { channels, epgMock, recentMock, toastMock, healthMock } = vi.hoisted(() => {
+const { channels, epgMock, recentMock, toastMock, healthMock, workerMock } = vi.hoisted(() => {
   function makeChannel(over: Partial<Channel>): Channel {
     return {
       id: '', name: '', logo: '', group: '', url: '', extras: null,
@@ -33,6 +33,7 @@ const { channels, epgMock, recentMock, toastMock, healthMock } = vi.hoisted(() =
         return status ? { status } : null;
       }),
     },
+    workerMock: { failIndexes: false },
   };
 });
 
@@ -75,7 +76,10 @@ vi.mock('../workers/app-worker-client', async () => {
   return {
     retainAppWorker: () => () => undefined,
     runAppWorkerTask: (task: string, payload: never) => {
-      if (task === 'list-search.index') return Promise.resolve(index.indexList(payload));
+      if (task === 'list-search.index') {
+        if (workerMock.failIndexes) return Promise.reject(new Error('App worker failed'));
+        return Promise.resolve(index.indexList(payload));
+      }
       if (task === 'list-search.query') return Promise.resolve(index.queryList(payload));
       if (task === 'list-search.release') return Promise.resolve(index.releaseList(payload));
       return Promise.reject(new Error(`Unexpected worker task: ${task}`));
@@ -85,6 +89,8 @@ vi.mock('../workers/app-worker-client', async () => {
 
 import { Sidebar } from './sidebar';
 import { setLocale } from '../i18n';
+import { Focus, Tier } from '../navigation/focus-scope';
+import { setInputMode } from '../navigation/input-mode';
 import { PlaylistService } from '../services/playlist-service';
 
 let container: HTMLElement;
@@ -115,19 +121,34 @@ beforeEach(() => {
   epgMock.nowPlaying = null;
   toastMock.mockClear();
   healthMock.records = {};
+  workerMock.failIndexes = false;
   sidebar = new Sidebar(container, getCurrentIndex, onSelect, getCurrentCatchupStart);
+  Focus.install();
 });
 
 afterEach(() => {
+  Focus.uninstall();
   vi.useRealTimers();
+  setInputMode('pointer');
   document.body.innerHTML = '';
 });
 
+function hover(target: Element): void {
+  target.dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+}
+
+function ringed(): Element[] {
+  Focus.flush();
+  return Array.from(el.querySelectorAll('.focused'));
+}
+
 function items(): HTMLElement[] {
+  Focus.flush();
   return Array.from(el.querySelectorAll<HTMLElement>('.sidebar-ch-item'));
 }
 
 function groupItems(): HTMLElement[] {
+  Focus.flush();
   return Array.from(el.querySelectorAll<HTMLElement>('.sidebar-group-item'));
 }
 
@@ -194,6 +215,43 @@ describe('Sidebar', () => {
       expect(sidebar.visible).toBe(false);
       expect(el.classList.contains('visible')).toBe(false);
     });
+
+    it('adds the hidden class once the slide-out ends', () => {
+      sidebar.show();
+      sidebar.hide();
+      expect(el.classList.contains('hidden')).toBe(false);
+      el.dispatchEvent(new Event('transitionend'));
+      expect(el.classList.contains('hidden')).toBe(true);
+    });
+
+    // Chromium 53 predates `once`: it ignores `once` in an options object
+    // and keeps the listener attached after it fires.
+    it('keeps no hide listener behind on an engine without `once`', () => {
+      const attached = new Set<EventListenerOrEventListenerObject>();
+      const add = el.addEventListener.bind(el);
+      const remove = el.removeEventListener.bind(el);
+      el.addEventListener = (type: string, fn: EventListenerOrEventListenerObject | null,
+        options?: boolean | AddEventListenerOptions) => {
+        if (type === 'transitionend' && fn) attached.add(fn);
+        add(type, fn, typeof options === 'object' ? !!options.capture : options);
+      };
+      el.removeEventListener = (type: string, fn: EventListenerOrEventListenerObject | null,
+        options?: boolean | EventListenerOptions) => {
+        if (type === 'transitionend' && fn) attached.delete(fn);
+        remove(type, fn, options);
+      };
+      const before = attached.size;
+      for (let i = 0; i < 3; i++) {
+        sidebar.show();
+        sidebar.hide();
+        el.dispatchEvent(new Event('transitionend'));
+      }
+      sidebar.show();
+      sidebar.hide();
+      sidebar.show();
+      expect(attached.size).toBe(before);
+    });
+
 
     it('show() is idempotent', () => {
       sidebar.show();
@@ -528,6 +586,109 @@ describe('Sidebar', () => {
         PlaylistService.getGroupCount = originalCount;
         PlaylistService.groupsRevision++;
       }
+    });
+
+    it('resumes group focus in view after the focused group scrolled away', () => {
+      const logs = vi.spyOn(console, 'log');
+      const originalGroups = PlaylistService.getGroupsForPlaylist;
+      const originalCount = PlaylistService.getGroupCount;
+      PlaylistService.getGroupsForPlaylist = () =>
+        Array.from({ length: 500 }, (_, index) => `Group ${String(index)}`);
+      PlaylistService.getGroupCount = () => 1;
+      PlaylistService.groupsRevision++;
+      try {
+        sidebar.refresh();
+        sidebar.handleAction('left');
+        const list = el.querySelector<HTMLElement>('.sidebar-group-list')!;
+        Object.defineProperty(list, 'clientHeight', { value: 640, configurable: true });
+        list.scrollTop = 6400;
+        list.dispatchEvent(new Event('scroll'));
+        vi.advanceTimersByTime(20);
+        expect(list.scrollTop).toBe(6400);
+
+        sidebar.handleAction('up');
+
+        expect(list.scrollTop).toBe(6400);
+        expect(el.querySelector<HTMLElement>('.sidebar-group-item.focused')?.dataset.groupPos)
+          .toBe('100');
+        const lines = logs.mock.calls.map(args => args.join(' '))
+          .filter(line => line.includes('event=nav.focus.repaired reason=detached '));
+        expect(lines).toEqual([expect.stringMatching(/scope=player.sidebar distance=100$/)]);
+      } finally {
+        PlaylistService.getGroupsForPlaylist = originalGroups;
+        PlaylistService.getGroupCount = originalCount;
+        PlaylistService.groupsRevision++;
+      }
+    });
+
+    describe('with many groups', () => {
+      let originalGroups: typeof PlaylistService.getGroupsForPlaylist;
+      let originalCount: typeof PlaylistService.getGroupCount;
+
+      beforeEach(() => {
+        originalGroups = PlaylistService.getGroupsForPlaylist;
+        originalCount = PlaylistService.getGroupCount;
+        PlaylistService.getGroupsForPlaylist = () =>
+          Array.from({ length: 500 }, (_, index) => `Group ${String(index)}`);
+        PlaylistService.getGroupCount = () => 1;
+        PlaylistService.groupsRevision++;
+        sidebar.refresh();
+        sidebar.handleAction('left');
+      });
+
+      afterEach(() => {
+        PlaylistService.getGroupsForPlaylist = originalGroups;
+        PlaylistService.getGroupCount = originalCount;
+        PlaylistService.groupsRevision++;
+      });
+
+      function scrollGroups(scrollTop: number): HTMLElement {
+        const list = el.querySelector<HTMLElement>('.sidebar-group-list')!;
+        Object.defineProperty(list, 'clientHeight', { value: 640, configurable: true });
+        list.scrollTop = scrollTop;
+        list.dispatchEvent(new Event('scroll'));
+        vi.advanceTimersByTime(20);
+        return list;
+      }
+
+      it('a logo error render keeps the scrolled group list in place', () => {
+        const list = scrollGroups(6400);
+        const logo = document.createElement('img');
+        logo.className = 'ch-logo';
+        logo.setAttribute('src', 'http://host/a.png');
+        el.querySelector('.sidebar-ch-item')!.appendChild(logo);
+        logo.dispatchEvent(new Event('error'));
+
+        expect(list.scrollTop).toBe(6400);
+        expect(groupItems().some(item => item.dataset.groupPos === '100')).toBe(true);
+      });
+
+      it('a refresh keeps the scrolled group list in place', () => {
+        const list = scrollGroups(6400);
+        sidebar.refresh();
+
+        expect(list.scrollTop).toBe(6400);
+        expect(groupItems().some(item => item.dataset.groupPos === '100')).toBe(true);
+      });
+
+      it('opening groups scrolls a far-down current group into view', () => {
+        scrollGroups(400 * 64);
+        groupItems().find(item => item.dataset.groupPos === '403')!
+          .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(el.querySelector('.sidebar-channel-title')?.textContent?.trim())
+          .toBe('Group 400');
+        sidebar.handleAction('right');
+        expect(el.classList.contains('channels-only')).toBe(true);
+        const list = scrollGroups(0);
+
+        sidebar.handleAction('left');
+
+        const focused = el.querySelector<HTMLElement>('.sidebar-group-item.focused');
+        expect(focused?.dataset.groupPos).toBe('403');
+        expect(focused?.classList.contains('active')).toBe(true);
+        // Centered in the 640px viewport: 403 * 64 - (640 - 64) / 2.
+        expect(list.scrollTop).toBe(403 * 64 - 288);
+      });
     });
 
     it('uses the fitted group width for the pointer dismissal boundary', () => {
@@ -907,6 +1068,32 @@ describe('Sidebar', () => {
     it('lets an unhandled key (typing) reach the global handler', () => {
       expect(pressInSearch({ key: 'a' })).toHaveBeenCalledTimes(1);
     });
+
+    it('leaves no reveal waiting when the caret leaves while another scope owns the keys', () => {
+      sidebar.show();
+      highlightSearch();
+      sidebar.handleAction('select');
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      expect(document.activeElement).toBe(search);
+      // The pointer notes a row while the box has the caret; then the keys
+      // take over and a prompt opens above.
+      hover(items()[1]);
+      setInputMode('keys');
+      const prompt = document.createElement('div');
+      document.body.appendChild(prompt);
+      const above = Focus.register({ id: 'test.prompt', root: prompt, tier: Tier.prompt });
+      Focus.push(above);
+      Focus.flush();
+      const reveal = vi.spyOn(sidebar as unknown as { reveal(key: string): boolean }, 'reveal');
+
+      search.blur();
+      Focus.pop(above);
+      Focus.flush();
+
+      expect(sidebar.visible).toBe(true);
+      expect(reveal).not.toHaveBeenCalled();
+      expect(ringed()).toEqual([items()[1]]);
+    });
   });
 
   describe('pointer interaction', () => {
@@ -922,6 +1109,17 @@ describe('Sidebar', () => {
       expect(el.classList.contains('groups-expanded')).toBe(false);
 
       vi.advanceTimersByTime(1);
+      expect(el.classList.contains('groups-expanded')).toBe(true);
+    });
+
+    it('leaves the tab row edge to edge scrolling instead of opening groups', () => {
+      sidebar.handlePointerMove(30, true, true);
+      finishOpening();
+      vi.advanceTimersByTime(1000);
+      expect(el.classList.contains('groups-expanded')).toBe(false);
+
+      sidebar.handlePointerMove(30, true);
+      vi.advanceTimersByTime(500);
       expect(el.classList.contains('groups-expanded')).toBe(true);
     });
 
@@ -945,6 +1143,36 @@ describe('Sidebar', () => {
       expect(sidebar.visible).toBe(true);
       vi.advanceTimersByTime(1);
       expect(sidebar.visible).toBe(false);
+    });
+
+    it('keeps the ring hidden and the list still while the pointer exit closes the groups', () => {
+      sidebar.handleAction('left');
+      hover(groupItems()[1]);
+      groupItems()[1].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: container }));
+      expect(ringed()).toEqual([]);
+      const reveal = vi.mocked(Element.prototype.scrollIntoView);
+      reveal.mockClear();
+      sidebar.handlePointerMove(741, false);
+      expect(el.classList.contains('channels-only')).toBe(true);
+      expect(ringed()).toEqual([]);
+      expect(reveal).not.toHaveBeenCalled();
+    });
+
+    it('keeps the ring hidden when the pointer exit closes the groups without a mouseout', () => {
+      sidebar.handleAction('left');
+      hover(groupItems()[1]);
+      sidebar.handlePointerMove(741, false);
+      expect(el.classList.contains('channels-only')).toBe(true);
+      expect(ringed()).toEqual([]);
+    });
+
+    it('Back still closes the groups onto a lit channel', () => {
+      sidebar.handleAction('left');
+      groupItems()[1].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: container }));
+      sidebar.handleBack();
+      const lit = ringed();
+      expect(lit).toHaveLength(1);
+      expect(items()).toContain(lit[0]);
     });
 
     it('cancels the pending close when the pointer returns to channels', () => {
@@ -973,55 +1201,203 @@ describe('Sidebar', () => {
     });
 
     it('hovering an item moves the focus highlight', () => {
-      items()[2].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(items()[2].classList.contains('focused')).toBe(true);
+      hover(items()[2]);
+      expect(ringed()).toEqual([items()[2]]);
     });
 
     it('hovering up onto the search box highlights it and clears the channel', () => {
-      items()[1].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(items()[1].classList.contains('focused')).toBe(true);
+      hover(items()[1]);
+      expect(ringed()).toEqual([items()[1]]);
       const search = el.querySelector<HTMLElement>('.sidebar-search-input')!;
-      search.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(items().some(i => i.classList.contains('focused'))).toBe(false);
-      expect(search.classList.contains('focused')).toBe(true);
+      hover(search);
+      expect(ringed()).toEqual([search]);
+    });
+
+    it('lights the search box under the pointer while it has the caret', () => {
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      search.focus();
+      expect(ringed()).toEqual([]);
+      hover(items()[2]);
+      expect(ringed()).toEqual([]);
+      hover(search);
+      expect(ringed()).toEqual([search]);
+      hover(items()[2]);
+      expect(ringed()).toEqual([]);
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      expect(ringed()).toEqual([items()[0]]);
+    });
+
+    it('lights the search box clicked under a still pointer', () => {
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      hover(items()[2]);
+      const matches = search.matches.bind(search);
+      vi.spyOn(search, 'matches').mockImplementation(s => s === ':hover' || matches(s));
+      search.focus();
+      expect(ringed()).toEqual([search]);
+      hover(items()[2]);
+      expect(ringed()).toEqual([]);
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      expect(ringed()).toEqual([items()[0]]);
+    });
+
+    it('keeps the ring concealed when the keys focus the search box under the pointer', () => {
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      const matches = search.matches.bind(search);
+      vi.spyOn(search, 'matches').mockImplementation(s => s === ':hover' || matches(s));
+      setInputMode('keys');
+      search.focus();
+      expect(ringed()).toEqual([]);
+    });
+
+    it('lights the search box clicked under a still pointer while it already has the caret', () => {
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      const matches = search.matches.bind(search);
+      vi.spyOn(search, 'matches').mockImplementation(s => s === ':hover' || matches(s));
+      setInputMode('keys');
+      search.focus();
+      expect(ringed()).toEqual([]);
+      search.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      expect(ringed()).toEqual([search]);
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      expect(ringed()).toEqual([items()[0]]);
+    });
+
+    it.each([
+      ['a group', () => groupItems()[1]],
+      ['a source tab', () => el.querySelector<HTMLElement>('[data-sidebar-playlist="PL2"]')!],
+    ])('Down from the search box lands on the first channel after hovering %s', (_, target) => {
+      sidebar.handleAction('left');
+      const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+      search.focus();
+      hover(target());
+      expect(ringed()).toEqual([]);
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      expect(ringed()).toEqual([items()[0]]);
+    });
+
+    it('marks every item it lights on hover as a hover target', () => {
+      sidebar.handleAction('left');
+      const lit = [
+        el.querySelector('.sidebar-search-input')!,
+        ...Array.from(el.querySelectorAll('.sidebar-tab, .sidebar-group-item, .sidebar-ch-item')),
+      ];
+      for (const item of lit) {
+        expect(item.matches('[data-focusable], [data-hover-target]')).toBe(true);
+      }
     });
 
     it('clears the highlight when the cursor leaves the sidebar', () => {
-      items()[2].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(items()[2].classList.contains('focused')).toBe(true);
-      el.dispatchEvent(new MouseEvent('mouseleave'));
-      expect(el.querySelectorAll('.focused')).toHaveLength(0);
+      hover(items()[2]);
+      expect(ringed()).toEqual([items()[2]]);
+      items()[2].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: container }));
+      expect(ringed()).toEqual([]);
+    });
+
+    it('keeps the highlight while the cursor moves between its items', () => {
+      hover(items()[2]);
+      items()[2].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: items()[1] }));
+      expect(ringed()).toEqual([items()[2]]);
     });
 
     it('re-shows the highlight when the cursor returns to the same row', () => {
-      items()[2].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      el.dispatchEvent(new MouseEvent('mouseleave'));
-      items()[2].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); // same row
-      expect(items()[2].classList.contains('focused')).toBe(true);
+      hover(items()[2]);
+      items()[2].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: container }));
+      hover(items()[2]);
+      expect(ringed()).toEqual([items()[2]]);
     });
 
-    it('hover only re-highlights when the position changes', () => {
-      const spy = vi.spyOn(sidebar as unknown as { updateFocus: () => void }, 'updateFocus');
+    it('re-shows the highlight on the next key after the cursor left', () => {
+      hover(items()[2]);
+      items()[2].dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: container }));
+      sidebar.handleAction('up');
+      expect(ringed()).toEqual([items()[1]]);
+    });
+
+    it('claims the wheel so it scrolls the list instead of stepping channels', () => {
+      const logs = vi.spyOn(console, 'log');
+      const wheel = () => new CustomEvent('nav:wheel', { bubbles: true, cancelable: true, detail: { step: false } });
+      const first = wheel();
+      items()[1].dispatchEvent(first);
+      expect(first.defaultPrevented).toBe(true);
+      expect(ringed()).toEqual([items()[1]]);
+      items()[1].dispatchEvent(wheel());
+      const lines = logs.mock.calls.map(args => args.join(' '))
+        .filter(line => line.includes('event=sidebar.wheel.scroll '));
+      expect(lines).toEqual([expect.stringContaining('pane=channels')]);
+    });
+
+    it('hovering a half-hidden source tab scrolls it into view', () => {
+      const strip = el.querySelector<HTMLElement>('.sidebar-tabs')!;
+      strip.style.overflowX = 'auto';
+      vi.spyOn(strip, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 100, 40));
+      Object.defineProperty(strip, 'clientWidth', { value: 100 });
+      Object.defineProperty(strip, 'clientHeight', { value: 40 });
+      const tab = el.querySelector<HTMLElement>('[data-sidebar-playlist="PL2"]')!;
+      vi.spyOn(tab, 'getBoundingClientRect').mockReturnValue(new DOMRect(90, 0, 60, 40));
+      const reveal = vi.fn();
+      tab.scrollIntoView = reveal;
+      hover(tab);
+      expect(ringed()).toEqual([tab]);
+      expect(reveal).toHaveBeenCalledWith({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+    });
+
+    it('lights a half-hidden row under the pointer where it is', () => {
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      list.style.overflowY = 'auto';
+      vi.spyOn(list, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 100, 100));
+      Object.defineProperty(list, 'clientWidth', { value: 100 });
+      Object.defineProperty(list, 'clientHeight', { value: 100 });
       const row = items()[2];
-      row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(spy).toHaveBeenCalledTimes(1);
-      // Sweeping across a child of the same row must not re-run updateFocus.
-      row.querySelector('.ch-name')!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(spy).toHaveBeenCalledTimes(1);
-      // A different row does.
-      items()[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      expect(spy).toHaveBeenCalledTimes(2);
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 80, 100, 84));
+      const reveal = vi.fn();
+      row.scrollIntoView = reveal;
+      hover(row);
+      expect(ringed()).toEqual([row]);
+      expect(reveal).not.toHaveBeenCalled();
     });
 
-    it('wheel down / up moves the focus highlight', () => {
-      const wheel = new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true });
-      el.dispatchEvent(wheel);
-      expect(items()[2].classList.contains('focused')).toBe(true);
-      expect(wheel.defaultPrevented).toBe(false);
-      el.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true }));
-      expect(items()[2].classList.contains('focused')).toBe(true);
-      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
-      expect(items()[1].classList.contains('focused')).toBe(true);
+    it('re-hovering the same row after a key brings the ring back under the pointer', () => {
+      hover(items()[2]);
+      expect(ringed()).toEqual([items()[2]]);
+      sidebar.handleAction('up');
+      expect(ringed()).toEqual([items()[1]]);
+      hover(items()[2]);
+      expect(ringed()).toEqual([items()[2]]);
+    });
+
+    it('a key cancels the edge dwell', () => {
+      sidebar.handlePointerMove(30, true);
+      finishOpening();
+      vi.advanceTimersByTime(200);
+      setInputMode('keys');
+      vi.advanceTimersByTime(500);
+      expect(el.classList.contains('groups-expanded')).toBe(false);
+    });
+
+    it('a key cancels the edge dwell of a cursor that never left key mode', () => {
+      setInputMode('keys');
+      sidebar.handlePointerMove(30, true);
+      finishOpening();
+      vi.advanceTimersByTime(200);
+      sidebar.handleAction('down');
+      vi.advanceTimersByTime(500);
+      expect(el.classList.contains('groups-expanded')).toBe(false);
+    });
+
+    it('a cursor resting at the edge in key mode still opens the groups', () => {
+      setInputMode('keys');
+      sidebar.handlePointerMove(30, true);
+      finishOpening();
+      vi.advanceTimersByTime(500);
+      expect(el.classList.contains('groups-expanded')).toBe(true);
+    });
+
+    it('a key cancels the close that the pointer leaving started', () => {
+      sidebar.handleAction('left');
+      sidebar.handlePointerMove(741, false);
+      setInputMode('keys');
+      vi.advanceTimersByTime(500);
+      expect(sidebar.visible).toBe(true);
     });
 
     it('does not stack listeners across re-renders (single select per click)', () => {
@@ -1071,6 +1447,103 @@ describe('Sidebar', () => {
 
       sidebar.handleAction('select');
       expect(onSelect).toHaveBeenCalledWith(30, undefined, { group: 'builtin:all', playlist: undefined });
+    });
+
+    it('hover after a not-yet-reported wheel scroll keeps the scroll position', () => {
+      sidebar.show();
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      Object.defineProperty(list, 'clientHeight', { value: 460, configurable: true });
+      list.scrollTop = 2300;
+      list.dispatchEvent(new Event('scroll'));
+      vi.advanceTimersByTime(20);
+      // The next native scroll lands before its scroll event fires.
+      list.scrollTop = 2500;
+      const row = items().find(item => item.dataset.sidebarPos === '32')!;
+      hover(row);
+      Focus.flush();
+
+      expect(list.scrollTop).toBe(2500);
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('32');
+    });
+
+    it('resumes focus in view after the focused row scrolled away', () => {
+      const logs = vi.spyOn(console, 'log');
+      sidebar.show();
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      Object.defineProperty(list, 'clientHeight', { value: 460, configurable: true });
+      list.scrollTop = 2300;
+      list.dispatchEvent(new Event('scroll'));
+      vi.advanceTimersByTime(20);
+
+      sidebar.handleAction('down');
+
+      expect(list.scrollTop).toBe(2300);
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('27');
+      const lines = logs.mock.calls.map(args => args.join(' '))
+        .filter(line => line.includes('event=nav.focus.repaired reason=detached '));
+      expect(lines).toEqual([expect.stringMatching(/scope=player.sidebar distance=27$/)]);
+
+      sidebar.handleAction('down');
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('28');
+    });
+
+    it('OK on a scrolled-away row resumes focus instead of tuning it', () => {
+      sidebar.show();
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      Object.defineProperty(list, 'clientHeight', { value: 460, configurable: true });
+      list.scrollTop = 2300;
+      list.dispatchEvent(new Event('scroll'));
+      vi.advanceTimersByTime(20);
+
+      sidebar.handleAction('select');
+
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(list.scrollTop).toBe(2300);
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('27');
+    });
+
+    it('Left then Right after a wheel scroll keeps the scrolled list in place', () => {
+      const logs = vi.spyOn(console, 'log');
+      sidebar.show();
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      Object.defineProperty(list, 'clientHeight', { value: 460, configurable: true });
+      list.scrollTop = 2300;
+      list.dispatchEvent(new Event('scroll'));
+      vi.advanceTimersByTime(20);
+
+      sidebar.handleAction('left');
+      expect(el.classList.contains('groups-expanded')).toBe(true);
+      sidebar.handleAction('right');
+
+      expect(el.classList.contains('channels-only')).toBe(true);
+      expect(list.scrollTop).toBe(2300);
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('27');
+      const lines = logs.mock.calls.map(args => args.join(' '))
+        .filter(line => line.includes('event=nav.focus.repaired reason=detached '));
+      expect(lines).toEqual([expect.stringMatching(/scope=player.sidebar distance=27$/)]);
+    });
+
+    it('opening scrolls a far-down current channel into view', () => {
+      getCurrentIndex.mockReturnValue(900);
+      sidebar.show();
+      const list = el.querySelector<HTMLElement>('.sidebar-channel-list')!;
+      const focused = el.querySelector<HTMLElement>('.sidebar-ch-item.focused');
+      expect(focused?.dataset.sidebarPos).toBe('900');
+      // Centered in the 800px fallback viewport: 900 * 88 - (800 - 88) / 2.
+      expect(list.scrollTop).toBe(78844);
+
+      sidebar.hide();
+      list.scrollTop = 0;
+      getCurrentIndex.mockReturnValue(600);
+      sidebar.show();
+      expect(el.querySelector<HTMLElement>('.sidebar-ch-item.focused')?.dataset.sidebarPos)
+        .toBe('600');
+      expect(list.scrollTop).toBe(600 * 88 - 356);
     });
 
     it('updates the rendered window when the list scrolls', () => {
@@ -1173,6 +1646,48 @@ describe('Sidebar', () => {
       sidebar.handleAction('down');   // source -> the single result
       sidebar.handleAction('select'); // pick it
       expect(onSelect).toHaveBeenCalledWith(2, undefined, { group: 'builtin:all', playlist: undefined }); // Charlie is global index 2, not filtered 0
+    });
+
+    it('logs the fallback for a failing worker once, not again while the retry is pending', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      // Only the faked clock (and vi.waitFor's 50 ms polls) can end the delay.
+      vi.useFakeTimers({ toFake: ['performance'] });
+      try {
+        const fallbackLogs = (): unknown[][] => error.mock.calls
+          .filter(call => call.some(part => part === 'event=search.worker.fallback.used'));
+        workerMock.failIndexes = true;
+        sidebar.show();
+        highlightSearch();
+        sidebar.handleAction('select');
+        const search = el.querySelector<HTMLInputElement>('.sidebar-search-input')!;
+        const type = (value: string): void => {
+          search.value = value;
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        const names = (): Array<string | null | undefined> =>
+          items().map(i => i.querySelector('.ch-name')?.textContent);
+
+        type('charlie');
+        await vi.waitFor(() => expect(names()).toEqual(['Charlie']));
+        expect(fallbackLogs()).toHaveLength(1);
+
+        type('bravo');
+        await vi.waitFor(() => expect(names()).toEqual(['Bravo']));
+        vi.advanceTimersByTime(CONFIG.SEARCH.INDEX_RETRY_DELAY_MS - 1000);
+        type('alpha');
+        await vi.waitFor(() => expect(names()).toEqual(['Alpha']));
+        expect(fallbackLogs()).toHaveLength(1);
+
+        // The delay passed: the worker is tried, and fails, again.
+        vi.advanceTimersByTime(CONFIG.SEARCH.INDEX_RETRY_DELAY_MS);
+        type('char');
+        await vi.waitFor(() => expect(fallbackLogs()).toHaveLength(2));
+      } finally {
+        // Clears the real auto-hide timer that show() and typing started.
+        sidebar.hide();
+        vi.useRealTimers();
+        error.mockRestore();
+      }
     });
   });
 });

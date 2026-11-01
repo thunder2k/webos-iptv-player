@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Reminder } from '../types';
 
 const { state, reminderMock, toastMock } = vi.hoisted(() => {
@@ -25,6 +25,7 @@ vi.mock('./toast', () => ({ showToast: toastMock }));
 import { ReminderManager } from './reminder-manager';
 import { setLocale } from '../i18n';
 import { setDisplayTz } from '../utils/time';
+import { Focus } from '../navigation/focus-scope';
 
 const reminder = (over: Partial<Reminder> = {}): Reminder => ({
   channelKey: 'ch1',
@@ -50,12 +51,25 @@ beforeEach(() => {
   document.body.appendChild(container);
   onBack = vi.fn();
   manager = new ReminderManager(container, onBack);
+  // The manager's scope owns the keys, as on the Reminders view.
+  Focus.setBase(() => manager.focusScope);
 });
+
+// The scope paints the ring on its next reconcile.
+function ringed(selector: string): HTMLElement | null {
+  Focus.flush();
+  return container.querySelector<HTMLElement>(`${selector}.focused`);
+}
 
 function click(selector: string): void {
   container.querySelector<HTMLElement>(selector)!
     .dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
+
+afterEach(() => {
+  Focus.setBase(() => null);
+  Focus.uninstall();
+});
 
 describe('ReminderManager', () => {
   it('renders sorted upcoming reminders with escaped provider text', () => {
@@ -84,8 +98,7 @@ describe('ReminderManager', () => {
       .toBe('No upcoming reminders.');
     expect(container.querySelector('.reminder-manager-empty-hint')?.textContent)
       .toBe('To set a reminder, select an upcoming program in the Guide.');
-    expect(container.querySelector('.reminder-manager-back')?.classList.contains('focused'))
-      .toBe(true);
+    expect(ringed('.reminder-manager-back')).not.toBeNull();
   });
 
   it('groups reminders under Today and Tomorrow date rails', () => {
@@ -139,8 +152,7 @@ describe('ReminderManager', () => {
     click('.reminder-manager-remove');
 
     expect(reminderMock.remove).toHaveBeenCalledWith('ch1', 3000);
-    expect(container.querySelector<HTMLElement>('.reminder-manager-remove.focused')
-      ?.dataset.channelKey).toBe('ch2');
+    expect(ringed('.reminder-manager-remove')?.dataset.channelKey).toBe('ch2');
     expect(toastMock).toHaveBeenCalledWith('Reminder removed');
   });
 
@@ -150,8 +162,7 @@ describe('ReminderManager', () => {
 
     click('.reminder-manager-remove');
 
-    expect(container.querySelector('.reminder-manager-back')?.classList.contains('focused'))
-      .toBe(true);
+    expect(ringed('.reminder-manager-back')).not.toBeNull();
   });
 
   it('requires confirmation before clearing every reminder', () => {

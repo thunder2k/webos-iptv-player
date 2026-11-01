@@ -48,6 +48,29 @@ describe('setup page forms', () => {
     dom.window.close();
   });
 
+  it('defines every English message in every locale', () => {
+    const script = PAGE_HTML.match(/var MESSAGES = (\{[\s\S]*?\n {2}\});/)![1];
+    const messages = new Function(`return ${script};`)() as Record<
+      string,
+      { text: Record<string, string | Record<string, string>> }
+    >;
+    const englishKeys = Object.keys(messages.en.text).sort();
+    for (const [locale, { text }] of Object.entries(messages)) {
+      expect(Object.keys(text).sort(), locale).toEqual(englishKeys);
+      const rules = new Intl.PluralRules(locale);
+      const forms = text.channelCount as Record<string, string>;
+      // A lone `other` form is deliberate for languages whose nouns don't inflect after numbers.
+      if (Object.keys(forms).length === 1) {
+        expect(forms.other, locale).toContain('{count}');
+        continue;
+      }
+      for (let n = 0; n <= 200; n += 1) {
+        const category = rules.select(n);
+        expect(forms[category], `${locale}:${n}:${category}`).toContain('{count}');
+      }
+    }
+  });
+
   it('connects automatically after the fourth pairing digit', async () => {
     const fetchMock = vi.fn((url: string, options?: { method?: string; body?: string }) => {
       if (url === '/pair' && options?.method === 'POST') {

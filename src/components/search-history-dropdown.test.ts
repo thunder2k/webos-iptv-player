@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { storageMock } = vi.hoisted(() => ({
   storageMock: {
@@ -12,6 +12,7 @@ vi.mock('../services/storage-service', () => ({ StorageService: storageMock }));
 
 import { SearchHistoryDropdown } from './search-history-dropdown';
 import { SpatialNav } from '../navigation/spatial-nav';
+import { Focus } from '../navigation/focus-scope';
 
 const anchor = { right: 1700, bottom: 74, width: 640 };
 
@@ -23,7 +24,11 @@ function mk() {
 }
 
 const tiles = (root: HTMLElement) => [...root.querySelectorAll<HTMLElement>('.search-history-tile')];
-const focused = (root: HTMLElement) => root.querySelector<HTMLElement>('.focused');
+// The scope paints the ring on its next reconcile.
+const focused = (root: HTMLElement) => {
+  Focus.flush();
+  return root.querySelector<HTMLElement>('.focused');
+};
 
 describe('SearchHistoryDropdown', () => {
   beforeEach(() => {
@@ -34,6 +39,7 @@ describe('SearchHistoryDropdown', () => {
     storageMock.getSearchHistory.mockImplementation(() => storageMock.history.slice());
     storageMock.clearSearchHistory.mockImplementation(() => { storageMock.history = []; return true; });
   });
+  afterEach(() => Focus.uninstall());
 
   it('hangs the recent searches and a clear button from the search box', () => {
     const { dropdown, root } = mk();
@@ -49,6 +55,17 @@ describe('SearchHistoryDropdown', () => {
     expect(panel.style.top).toBe('86px');
     expect(panel.style.width).toBe('640px');
     expect(root.querySelector('.search-history-scrim')).not.toBeNull();
+  });
+
+  it('owns the keys while open and hands them back when it closes', () => {
+    const below = Focus.register({ id: 'view.test', root: document.body });
+    Focus.setBase(() => below);
+    const { dropdown } = mk();
+    dropdown.open(anchor);
+    expect(Focus.owner()?.id).toBe('search.history');
+    dropdown.handleAction('back');
+    expect(dropdown.isOpen).toBe(false);
+    expect(Focus.owner()).toBe(below);
   });
 
   it('logs open, pick, and clear for tv.sh diag without the query text', () => {

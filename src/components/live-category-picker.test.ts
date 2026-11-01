@@ -7,6 +7,7 @@ import {
   unseenLiveCategoryIds,
   type LiveCategoryPickerOptions,
 } from './live-category-picker';
+import { Focus } from '../navigation/focus-scope';
 
 const { toastMock } = vi.hoisted(() => ({ toastMock: vi.fn() }));
 vi.mock('./toast', () => ({ showToast: toastMock }));
@@ -221,6 +222,17 @@ describe('LiveCategoryPicker', () => {
       expect(picker.visible).toBe(false);
     });
 
+    it('lets the keys leave the account menu once choosing an account closes the picker', async () => {
+      let ownerAtDone: string | null | undefined;
+      await open({ accounts: ACCOUNTS, onSwitch: vi.fn(), onDone: () => { ownerAtDone = Focus.owner()?.id ?? null; } });
+      clickAvatar();
+      expect(Focus.owner()?.id).toBe('prompt.live_categories.accounts');
+      picker.handleAction('down');
+      picker.handleAction('select');
+      expect(picker.visible).toBe(false);
+      expect(ownerAtDone).toBeNull();
+    });
+
     it('keeps editing the current account while nothing is selected', async () => {
       const onSwitch = vi.fn();
       await open({ accounts: ACCOUNTS, onSwitch });
@@ -246,7 +258,10 @@ describe('LiveCategoryPicker', () => {
 
   describe('with a large catalog', () => {
     const many = Array.from({ length: 5000 }, (_, i) => ({ id: `c${i + 1}`, name: `Group ${i + 1}`, parentId: '0' }));
-    const focusedKey = () => root().querySelector<HTMLElement>('.focused')?.dataset.key;
+    const focusedKey = () => {
+      Focus.flush();
+      return root().querySelector<HTMLElement>('.focused')?.dataset.key;
+    };
     const list = () => root().querySelector<HTMLElement>('[data-live-category-list]')!;
 
     it('mounts only a window of rows and keeps the full scroll height', async () => {

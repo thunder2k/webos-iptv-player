@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { Focus } from '../navigation/focus-scope';
 import { ReminderPrompt } from './reminder-prompt';
 
 let prompt: ReminderPrompt;
 beforeEach(() => { document.body.innerHTML = ''; prompt = new ReminderPrompt(); });
+afterEach(() => Focus.uninstall());
 
 const buttons = () => Array.from(document.querySelectorAll('.reminder-btn'));
 
@@ -53,10 +55,17 @@ describe('ReminderPrompt', () => {
     const onCancel = vi.fn();
     prompt.show('Alpha', 'Bravo', { onConfirm: vi.fn(), onCancel });
     document.querySelector<HTMLElement>('[data-reminder-action="cancel"]')!
-      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
 
     expect(document.querySelector('.reminder-btn.focused')!.textContent).toBe('Cancel');
     prompt.handleAction('select');
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('owns the keys at the prompt tier while shown', () => {
+    prompt.show('Alpha', 'Bravo', { onConfirm: vi.fn(), onCancel: vi.fn() });
+    expect(Focus.owner()?.id).toBe('prompt.reminder');
+    prompt.handleAction('back');
+    expect(Focus.owner()).toBeNull();
   });
 });

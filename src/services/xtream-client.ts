@@ -88,6 +88,48 @@ function toStr(v: unknown): string {
   return v === null || v === undefined ? '' : String(v);
 }
 
+function catalogTimestamp(value: unknown): number | null {
+  const text = toStr(value).trim();
+  let timestamp = NaN;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const number = Number(text);
+    // Xtream sends Unix seconds; larger values are already milliseconds.
+    timestamp = number < 1e12 ? number * 1000 : number;
+  } else if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+    timestamp = Date.parse(text);
+  }
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+}
+
+function catalogYear(value: unknown): number | null {
+  const match = /^(\d{4})(?:$|[-/.T ])/.exec(toStr(value).trim());
+  const year = match ? Number(match[1]) : 0;
+  return year > 0 ? year : null;
+}
+
+function firstValid<T>(parse: (value: unknown) => T | null, ...values: unknown[]): T | null {
+  for (const value of values) {
+    const parsed = parse(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+// List-level sort metadata only; series lists use last_modified when added is absent.
+function catalogSortMetadata(item: Record<string, unknown>, series = false): {
+  addedAt?: number;
+  year?: number;
+} {
+  const addedAt = firstValid(catalogTimestamp, item.added, series ? item.last_modified : undefined);
+  const year = firstValid(
+    catalogYear, item.year, item.releaseDate, item.release_date, item.releasedate,
+  );
+  return {
+    ...(addedAt !== null ? { addedAt } : {}),
+    ...(year !== null ? { year } : {}),
+  };
+}
+
 function firstNonEmptyString(...values: unknown[]): string {
   for (const value of values) {
     const text = toStr(value);
@@ -175,6 +217,22 @@ async function fetchJson(
     if (isXtreamRequestCancelled(err)) throw err;
     return null;
   }
+}
+
+async function fetchCatalogArray(
+  url: string,
+  maxBytes: number,
+  idField: 'category_id' | 'stream_id' | 'series_id',
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>[]> {
+  const data = await fetchJsonStrict(url, CATALOG_TIMEOUT, maxBytes, signal);
+  const items = asArray(data);
+  if (!Array.isArray(data) || (data.length && !items.some(item => toStr(item[idField]) !== ''))) {
+    const error = new XtreamRequestError('request_failed', 'Xtream catalog response was not a valid list');
+    logRequestFailure(url, error, CATALOG_TIMEOUT, maxBytes);
+    throw error;
+  }
+  return items;
 }
 
 // Coerce an unknown JSON value to an array of plain objects (empty if not an array).
@@ -369,12 +427,12 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
     },
 
     async getVodCategories(signal?: AbortSignal): Promise<VodCategory[]> {
-      const arr = asArray(await fetchJsonStrict(
+      const arr = await fetchCatalogArray(
         xtreamPlayerApi(creds, 'get_vod_categories'),
-        CATALOG_TIMEOUT,
         CONFIG.XTREAM.CATEGORY_MAX_BYTES,
+        'category_id',
         signal,
-      ));
+      );
       return arr
         .map((c) => ({ id: toStr(c.category_id), name: toStr(c.category_name) }))
         .filter((c) => c.id !== '');
@@ -382,12 +440,12 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
 
     async getVodStreams(categoryId?: string, signal?: AbortSignal): Promise<VodItem[]> {
       const params = categoryId ? { category_id: categoryId } : undefined;
-      const arr = asArray(await fetchJsonStrict(
+      const arr = await fetchCatalogArray(
         xtreamPlayerApi(creds, 'get_vod_streams', params),
-        CATALOG_TIMEOUT,
         CONFIG.XTREAM.CATALOG_MAX_BYTES,
+        'stream_id',
         signal,
-      ));
+      );
       return arr
         .map((s) => ({
           accountId,
@@ -397,6 +455,7 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
           rating: toStr(s.rating),
           categoryId: toStr(s.category_id),
           containerExtension: toStr(s.container_extension),
+          ...catalogSortMetadata(s),
         }))
         .filter((v) => v.streamId !== '');
     },
@@ -428,12 +487,12 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
     },
 
     async getSeriesCategories(signal?: AbortSignal): Promise<SeriesCategory[]> {
-      const arr = asArray(await fetchJsonStrict(
+      const arr = await fetchCatalogArray(
         xtreamPlayerApi(creds, 'get_series_categories'),
-        CATALOG_TIMEOUT,
         CONFIG.XTREAM.CATEGORY_MAX_BYTES,
+        'category_id',
         signal,
-      ));
+      );
       return arr
         .map((c) => ({ id: toStr(c.category_id), name: toStr(c.category_name) }))
         .filter((c) => c.id !== '');
@@ -441,12 +500,12 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
 
     async getSeries(categoryId?: string, signal?: AbortSignal): Promise<SeriesItem[]> {
       const params = categoryId ? { category_id: categoryId } : undefined;
-      const arr = asArray(await fetchJsonStrict(
+      const arr = await fetchCatalogArray(
         xtreamPlayerApi(creds, 'get_series', params),
-        CATALOG_TIMEOUT,
         CONFIG.XTREAM.CATALOG_MAX_BYTES,
+        'series_id',
         signal,
-      ));
+      );
       return arr
         .map((s) => ({
           accountId,
@@ -455,6 +514,7 @@ export function createXtreamClient(creds: XtreamCredentials, accountId = '') {
           poster: toStr(s.cover),
           rating: toStr(s.rating),
           categoryId: toStr(s.category_id),
+          ...catalogSortMetadata(s, true),
         }))
         .filter((s) => s.seriesId !== '');
     },

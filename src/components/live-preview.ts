@@ -266,7 +266,7 @@ export class LivePreview {
     if (!this.state) return false;
     this.control = control;
     this.options.blurTabBar();
-    this.options.channelList.setPreviewFocused(true);
+    this.options.channelList.setPreviewFocused(true, `preview-${control}`);
     this.render();
     return true;
   }

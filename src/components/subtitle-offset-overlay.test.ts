@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { SubtitleOffsetOverlay } from './subtitle-offset-overlay';
+import { Focus } from '../navigation/focus-scope';
+
+afterEach(() => {
+  Focus.uninstall();
+  document.body.innerHTML = '';
+});
 
 function make() {
   const el = document.createElement('div');

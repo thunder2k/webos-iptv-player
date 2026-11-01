@@ -1,0 +1,103 @@
+Third-party software and artwork
+===============================
+
+webOS IPTV Player is licensed under Apache-2.0; see LICENSE.
+Third-party components retain their own copyrights and licenses.
+The following notices and the referenced licenses directory accompany the
+application distribution. Installed npm package versions are appended at build
+time from the packages actually used to produce that distribution.
+
+Shaka Player
+------------
+https://github.com/shaka-project/shaka-player
+Copyright 2016 Google LLC; Apache-2.0.
+The DASH bundle is redistributed without modification.
+Full upstream license, including embedded third-party notices:
+  licenses/shaka-player.txt
+This includes MIT notices for Mozilla's language-mapping-list (Ali Al Dallal)
+and tXml (Tobias Nickel), and the upstream gl-matrix notice.
+The bundle also contains Apache-2.0 code from the Closure Library Authors
+and Brightcove.
+
+Shaka's embedded Common Media Library CMCD implementation:
+Copyright (c) 2023 Streaming Video Technology Alliance; Apache-2.0.
+The Shaka port's complete license and third-party NOTICE are preserved in:
+  licenses/shaka-cml-cmcd.txt
+  licenses/shaka-cml-cmcd-NOTICE.txt
+https://github.com/streaming-video-technology-alliance/common-media-library
+See the NOTICE for the original authors, licenses, and incorporated work.
+
+ASS subtitle rendering and compilation
+-------------------------------------
+assjs: https://github.com/weizhenye/ASS
+Copyright (c) 2014 weizhenye; MIT.
+  licenses/assjs.txt
+ass-compiler, incorporated into the published assjs bundle:
+https://github.com/weizhenye/ass-compiler
+Copyright (c) 2017 Zhenye Wei; MIT.
+  licenses/ass-compiler.txt
+
+Compression
+-----------
+fflate: https://github.com/101arrowz/fflate
+MIT; copyright notice and full terms:
+  licenses/fflate.txt
+
+Language metadata
+-----------------
+iso-639-1: https://github.com/meikidd/iso-639-1
+Copyright(c) by Mei Qingguang; MIT.
+  licenses/iso-639-1.txt
+iso-639-2: https://github.com/wooorm/iso-639-2
+Copyright (c) 2014 Titus Wormer; MIT.
+  licenses/iso-639-2.txt
+The latter package identifies the Library of Congress as its data source.
+
+QR code generation
+------------------
+qrcode-generator: https://github.com/kazuhikoarase/qrcode-generator
+Copyright (c) 2009 Kazuhiko Arase; MIT.
+  licenses/qrcode-generator.txt
+The word "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
+
+Twemoji artwork
+---------------
+https://github.com/jdecked/twemoji
+Copyright Twitter, Inc. and other contributors.
+Graphics licensed under Creative Commons Attribution 4.0 International:
+https://creativecommons.org/licenses/by/4.0/
+  licenses/twemoji.txt
+The upstream fork also credits:
+Copyright (c) 2022-present Jason Sofonia & Justine De Caires.
+Copyright (c) 2014-2021 Twitter.
+The artwork matches Twemoji v17.0.3; see licenses/SOURCES.txt.
+The SVG artwork is unmodified; the local filenames are descriptive aliases.
+Files:
+  assets/group-icons/all.svg
+  assets/group-icons/church.svg
+  assets/group-icons/clapper_board.svg
+  assets/group-icons/cooking.svg
+  assets/group-icons/entertainment.svg
+  assets/group-icons/gaming.svg
+  assets/group-icons/musical_note.svg
+  assets/group-icons/newspaper.svg
+  assets/group-icons/no_one_under_eighteen.svg
+  assets/group-icons/shopping.svg
+  assets/group-icons/soccer_ball.svg
+  assets/group-icons/star.svg
+  assets/group-icons/teddy_bear.svg
+  assets/group-icons/television.svg
+  assets/group-icons/three_oclock.svg
+  assets/group-icons/world_map.svg
+  assets/icons/pencil.svg
+
+Generated runtime helpers
+-------------------------
+The app bundles contain runtime helpers inserted by esbuild, and the bundled
+service contains helpers inserted by TypeScript (such as __assign and
+__importStar). These helpers are distributed code, not development tools.
+Their license texts are included:
+esbuild: https://github.com/evanw/esbuild (MIT)
+  licenses/esbuild.txt
+TypeScript: https://github.com/microsoft/TypeScript (Apache-2.0)
+  licenses/typescript.txt

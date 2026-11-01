@@ -2,6 +2,7 @@
   <img src="assets/icon.svg" alt="webOS IPTV Player 图标">
   <h1>webOS IPTV Player</h1>
   <p>一款专为 LG webOS 电视打造的 IPTV 播放器，支持 M3U 播放列表、Xtream Codes 账号、XMLTV 节目指南（EPG）、回看及直播时移。</p>
+  <p><strong>更多 webOS 工具：</strong> <a href="https://github.com/lennylxx/lg-devmode-forever">DevMode Forever</a> · <a href="https://github.com/lennylxx/lg-geolock-bypass">GeoLock Bypass</a> · <a href="https://github.com/lennylxx/lg-ipk-download">IPK Download</a></p>
   <p><a href="README.md">English</a> | 简体中文</p>
   <p>
   <a href="#支持的-webos-版本"><img src="https://img.shields.io/badge/webOS-4%2B-e6007e?logo=webos&logoColor=white" alt="webOS 4+"></a>
@@ -23,23 +24,23 @@
 
 | 回看续播 | 频道信息 |
 | --- | --- |
-| ![回看续播](https://github.com/user-attachments/assets/9a49fa89-b3ae-4b27-bcd6-b93de2c3e1e1) | ![频道信息](https://github.com/user-attachments/assets/9adf8302-750f-429b-9155-828c8c30f097) |
+| ![回看续播](https://github.com/user-attachments/assets/641a72bf-db7e-4757-ac71-c8add5114c7a) | ![频道信息](https://github.com/user-attachments/assets/9adf8302-750f-429b-9155-828c8c30f097) |
 
 | 播放浮层 | 字幕 |
 | --- | --- |
-| ![播放浮层](https://github.com/user-attachments/assets/6a75885d-6464-4ae8-a4f8-35774ab20838) | ![字幕](https://github.com/user-attachments/assets/5d1fab57-1087-414b-9a20-f900589eac4a) |
+| ![播放浮层](https://github.com/user-attachments/assets/08c81dd7-5811-4fe3-9ed0-3e766d7124f9) | ![字幕](https://github.com/user-attachments/assets/5d1fab57-1087-414b-9a20-f900589eac4a) |
 
 | 字幕搜索 | 电影 |
 | --- | --- |
-| ![字幕搜索](https://github.com/user-attachments/assets/4ef9c97e-131b-4e4f-bf9a-c753d66f2956) | ![电影](https://github.com/user-attachments/assets/a6b09baf-0342-4e02-9d7e-5cf7677d1ecf) |
+| ![字幕搜索](https://github.com/user-attachments/assets/4ef9c97e-131b-4e4f-bf9a-c753d66f2956) | ![电影](https://github.com/user-attachments/assets/6d4d65c4-9719-4a2f-93a0-2fff4f8c0b2d) |
 
 | 电影详情 | 剧集详情 |
 | --- | --- |
-| ![电影详情](https://github.com/user-attachments/assets/1380b0b2-680f-49bb-a470-336c9e14a54a) | ![剧集详情](https://github.com/user-attachments/assets/2962184e-cc95-455d-aea7-888ff3297dc4) |
+| ![电影详情](https://github.com/user-attachments/assets/b1acbc3c-47f7-4cd2-9fe6-f3b3aca03768) | ![剧集详情](https://github.com/user-attachments/assets/2962184e-cc95-455d-aea7-888ff3297dc4) |
 
 | 搜索 | 设置 |
 | --- | --- |
-| ![搜索](https://github.com/user-attachments/assets/94bd8f82-1774-4a46-a607-206cf8321c4d) | ![设置](https://github.com/user-attachments/assets/59b155ed-40b6-4ebd-b063-a1e8cbd4de33) |
+| ![搜索](https://github.com/user-attachments/assets/0c6c54e2-6fb3-4fb2-a0da-7f6459815390) | ![设置](https://github.com/user-attachments/assets/8d47b502-ddcf-447f-a6b1-5afbf1b6b9ba) |
 
 | 主题选择器 | 节目提醒 |
 | --- | --- |
@@ -65,6 +66,8 @@
 - **最近观看** — 快速返回最近收看的直播频道，或从上次进度继续播放回看节目
 - **直播预览** — 浏览频道列表时在右侧持续播放，并提供节目信息和快捷控制
 - **电影和剧集** — 浏览 Xtream 账号提供的视频点播（VOD）内容，并按账号分别维护“继续观看”和“稍后观看”列表
+- **片库排序** — 电影和剧集可按名称、加入日期、评分或年份升序或降序排列，两个分区分别记住各自的排序方式
+- **管理“继续观看”和“稍后观看”** — 可逐个移除影片、清空整个列表，或在电影详情页清除观看进度
 - **视频点播自动连播队列** — 自动接续播放后续剧集或“稍后观看”中的电影，并在播放完成后将其移出列表
 - **回看与直播时移** — 播放已播出的节目；观看直播时可暂停、回退或一键返回直播点
 - **家长控制** — 使用 PIN 锁定直播分组、电影和剧集分类或单个节目，并建议锁定疑似成人内容的分组；锁定的内容可带锁显示或隐藏，并可设置何时再次要求输入 PIN
@@ -83,14 +86,16 @@
 
 **导航**
 
-- **全局搜索** — 同时搜索频道、EPG 节目、电影和剧集，并可从搜索结果直接观看直播、播放回看或设置提醒；搜索框下方会列出最近搜索，一键即可再次搜索
+- **全局搜索** — 同时搜索频道、EPG 节目、电影和剧集，并可从搜索结果直接观看直播、播放回看或设置提醒；搜索框下方会列出最近搜索，一键即可再次搜索；搜索索引会在后台预先构建并缓存，打开搜索几乎无需等待
 - **频道侧边栏** — 无需离开播放画面即可按分组切换频道，并查看当前节目信息
 - **频道自定义** — 支持调整顺序、隐藏、重命名、重新分组和管理收藏，还可修正各频道的 EPG 匹配及时间偏差
 - **自动播放与类型分组图标** — 让内容浏览更加快捷
 - **数字键选台** — 在频道列表或播放界面按遥控器数字键输入频道号直接切换，并在屏幕上显示输入中的数字
 - **全面支持 LG 遥控器与动感遥控器** — 所有界面均支持方向键空间导航和指针操作
+- **动感遥控器边缘滚动** — 将指针停在片库或搜索结果横排、标签栏或节目指南日期栏的边缘即可自动滚动，停留越久滚动越快
 - **多款配色主题** — 可实时预览并选择全局浅色或深色主题，播放器浮层另有深色和毛玻璃样式可选；所有选择均会自动保存
 - **文字大小可调** — 在不改变控件尺寸的前提下，可将文字缩放至 80%–150%
+- **动画模式** — “基础”在较旧的电视上关闭高开销的动态效果，“均衡”保留视觉效果但立即滚动到焦点项，“完整”在单次导航时平滑滚动
 - **多语言界面** — 支持 English、Deutsch、Español、Français、Italiano、Polski、Português (Brasil)、Русский、Türkçe、Українська 和简体中文；默认跟随电视的系统语言，也可在设置中手动指定
 
 **开发**
@@ -142,13 +147,13 @@ npm install -g @webos-tools/cli
 然后打开 **Settings → Add repository** 并输入：
 
 ```text
-https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json
+https://raw.githubusercontent.com/lennylxx/webos-homebrew/main/repository.json
 ```
 
 如果电脑已配置 `ares-cli`，可运行以下命令预填仓库地址：
 
 ```bash
-ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json"}'
+ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/lennylxx/webos-homebrew/main/repository.json"}'
 ```
 
 在电视上确认 **Add repository**。添加完成后，即可通过 Homebrew Channel
@@ -222,6 +227,11 @@ scripts/tv.sh perf --duration 30                 # 采样 CPU、堆、DOM 和布
 scripts/tv.sh diag                               # 生成经过脱敏的诊断报告
 scripts/tv.sh capt screenshot screen.png         # 截取电视画面和应用 OSD
 scripts/tv.sh capt record screen.mp4             # 录制 10 秒电视画面，约 5 fps，无音频
+scripts/tv.sh input key down ok red              # 按遥控器按键
+scripts/tv.sh input click 700 450                # 移动 Magic Remote 指针并点击
+scripts/tv.sh input wheel 3                      # 在指针处向下滚动滚轮 3 格
+scripts/tv.sh input key power                    # 关闭电视
+scripts/tv.sh input wake                         # 开启电视（Wake-on-LAN）
 scripts/tv.sh run 'uname -a'                     # 通过 SSH 在电视上执行命令
 scripts/tv.sh push ./file.txt /tmp/file.txt      # 将本地文件复制到电视
 scripts/tv.sh pull /tmp/file.txt ./file.txt      # 将电视文件复制到本地
@@ -230,8 +240,8 @@ scripts/tv.sh reboot                             # 通过 Luna 重启电视
 TV_DEVICE=tv2 scripts/tv.sh logs                 # 选择非默认的已配置电视
 ```
 
-运行 `scripts/tv.sh capt --help`、`scripts/tv.sh perf --help` 或
-`scripts/tv.sh diag --help` 可查看相关选项。
+运行 `scripts/tv.sh logs --help`（`eval`、`perf`、`diag`、`capt`、`input`
+同理）可查看相关选项。
 
 ### 在浏览器中预览
 
@@ -274,7 +284,7 @@ mpegts.js 和 Shaka 播放相应格式的视频。
 | 左 | 打开侧边栏并进入分组；支持时后退 30 秒 | 移至分组栏 | 切换至上一栏或前一天 |
 | 右 | 打开菜单；支持时前进 30 秒 | 移至频道栏 | 切换至下一栏、后一天或节目提醒 |
 | 确定/Enter | 显示或隐藏 OSD；暂停或继续播放；操作浮层控件 | 播放所选频道 | 播放频道或节目，或打开节目提醒 |
-| 返回 | 逐级关闭侧边栏或菜单；停止播放并返回 | 连按两次退出应用 | 关闭节目指南 |
+| 返回 | 逐级关闭侧边栏或菜单，再隐藏暂停时的 OSD；停止播放并返回 | 连按两次退出应用 | 关闭节目指南 |
 | 红色键 | 打开 EPG | 打开 EPG | — |
 | 蓝色键 | 打开设置 | 打开设置 | 打开设置 |
 | 黄色键 | 显示 OSD | 编辑频道列表 | 搜索节目 |
@@ -300,3 +310,10 @@ mpegts.js 和 Shaka 播放相应格式的视频。
 - [`docs/storage-and-data.md`](docs/storage-and-data.md) — 应用的数据存储范围与位置，以及用户数据和临时缓存的隔离方式
 - [`docs/lan-service.md`](docs/lan-service.md) — 通过内置局域网服务完成手机端设置和 M3U 文件上传
 - [`docs/unsupported-features.md`](docs/unsupported-features.md) — webOS 不允许或有意不提供的功能，以及替代方案
+
+## 许可证与第三方声明
+
+本项目使用 [Apache-2.0](LICENSE) 许可证。第三方软件与图标保留各自的许可证，
+详见[来源与署名清单](THIRD_PARTY_NOTICES.txt)。每次构建都会将 `LICENSE`、
+`THIRD_PARTY_NOTICES.txt` 和 `licenses/` 目录放入 `dist/`，随安装包一起分发。
+此清单仅覆盖正式安装包，不包含仅供本地开发的桌面预览播放库。

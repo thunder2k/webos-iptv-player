@@ -14,6 +14,7 @@ vi.mock('../services/parental-control', () => ({
   ParentalControlService: parental,
 }));
 
+import { Focus, Tier } from '../navigation/focus-scope';
 import { ParentalPinPrompt } from './parental-pin-prompt';
 
 describe('ParentalPinPrompt', () => {
@@ -21,6 +22,7 @@ describe('ParentalPinPrompt', () => {
     document.body.innerHTML = '';
     vi.clearAllMocks();
   });
+  afterEach(() => Focus.uninstall());
 
   const type = (pin: string) => {
     const input = document.querySelector<HTMLInputElement>('.parental-pin-input')!;
@@ -198,5 +200,18 @@ describe('ParentalPinPrompt', () => {
     expect(second).not.toHaveBeenCalled();
     expect(prompt.visible).toBe(true);
     expect(document.querySelector('h2')?.textContent).toBe('Second');
+  });
+
+  it('keeps the keys over a prompt pushed after it, until it closes', () => {
+    const prompt = new ParentalPinPrompt();
+    prompt.showVerify('First', vi.fn());
+    const later = Focus.register({ id: 'prompt.later', root: document.body, restrict: 'self-only' });
+    Focus.push(later);
+    expect(Focus.owner()?.id).toBe('prompt.parental_pin');
+    expect(Focus.owner()?.modal).toBe(true);
+
+    prompt.handleAction('back');
+    expect(Focus.owner()).toBe(later);
+    expect(Tier.critical).toBeGreaterThan(Tier.prompt);
   });
 });

@@ -139,7 +139,12 @@ export function normalizeDeviceConfigurationError(error) {
   );
 }
 
-export function resolveConfiguredDeviceIp({ deviceName, execFile = execFileSync } = {}) {
+export function resolveConfiguredDeviceIp(options) {
+  return resolveConfiguredDevice(options).ip;
+}
+
+// port is the device's SSH port as tv.sh uses it, or null when unset.
+export function resolveConfiguredDevice({ deviceName, execFile = execFileSync } = {}) {
   try {
     const raw = execFile(
       'ares-setup-device',
@@ -156,7 +161,8 @@ export function resolveConfiguredDeviceIp({ deviceName, execFile = execFileSync 
       devices[0];
     const ip = device?.deviceinfo?.ip;
     if (!ip) throw new Error('missing device ip');
-    return ip;
+    const port = Number(device.deviceinfo.port || device.details?.port) || null;
+    return { ip, port };
   } catch {
     throw normalizeDeviceConfigurationError(
       new Error('cannot resolve device IP from ares-setup-device'),

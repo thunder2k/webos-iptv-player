@@ -65,6 +65,15 @@ describe('ChannelCustomizationService', () => {
       .toEqual(['Charlie', 'Alpha', 'Bravo', 'Delta']);
   });
 
+  it('reports each kept channel\'s source index', () => {
+    ChannelCustomizationService.moveChannel([KEY_A, KEY_B, KEY_C], KEY_C, KEY_A, false);
+    ChannelCustomizationService.toggleHidden(KEY_B);
+    const indices = new Uint32Array(3);
+    expect(names(ChannelCustomizationService.applyTo(fixture(), false, indices)))
+      .toEqual(['Charlie', 'Alpha']);
+    expect(Array.from(indices.subarray(0, 2))).toEqual([2, 0]);
+  });
+
   it('drops a move whose target is gone', () => {
     ChannelCustomizationService.moveChannel([KEY_A, KEY_B], KEY_A, 'missing', true);
     expect(names(ChannelCustomizationService.applyTo(fixture()))).toEqual(['Alpha', 'Bravo', 'Charlie']);

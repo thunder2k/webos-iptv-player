@@ -1,4 +1,5 @@
 import type { Action } from '../types';
+import { Focus, type FocusScope, type Via } from '../navigation/focus-scope';
 import { html } from '../utils/dom';
 import { morph } from '../utils/morph';
 
@@ -15,40 +16,55 @@ export class ConfirmationPrompt {
   private el: HTMLElement | null = null;
   private options: ConfirmationOptions | null = null;
   private focus: 'confirm' | 'cancel' = 'cancel';
+  private scope: FocusScope | null = null;
+
+  // `id` names the focus scope, registered on the first show.
+  constructor(private readonly id: string) {}
 
   get visible(): boolean {
     return this.el !== null && !this.el.classList.contains('hidden');
   }
 
   show(options: ConfirmationOptions): void {
+    if (!this.scope) {
+      this.scope = Focus.register({
+        id: this.id,
+        root: () => this.el,
+        restrict: 'self-only',
+        onAction: (action) => this.handleAction(action),
+        defaultKey: () => this.focus,
+      });
+    }
     this.options = options;
     this.focus = 'cancel';
     if (!this.el) {
       this.el = document.createElement('div');
       this.el.className = 'confirmation-prompt';
       this.el.setAttribute('data-self-activate', '');
-      document.body.appendChild(this.el);
       this.bindEvents();
     }
+    // Last in <body>, so it paints above a prompt of its tier shown before it.
+    document.body.appendChild(this.el);
     this.el.classList.remove('hidden');
     this.render();
+    Focus.push(this.scope);
+    this.moveTo(this.focus, 'key');
   }
 
   hide(): void {
     this.el?.classList.add('hidden');
     this.options = null;
+    if (this.scope) Focus.pop(this.scope);
   }
 
   handleAction(action: Action): void {
     if (!this.visible) return;
     switch (action) {
       case 'left':
-        this.focus = 'confirm';
-        this.render();
+        this.moveTo('confirm', 'key');
         break;
       case 'right':
-        this.focus = 'cancel';
-        this.render();
+        this.moveTo('cancel', 'key');
         break;
       case 'select':
         this.focus === 'confirm' ? this.confirm() : this.cancel();
@@ -57,6 +73,12 @@ export class ConfirmationPrompt {
         this.cancel();
         break;
     }
+  }
+
+  private moveTo(focus: 'confirm' | 'cancel', via: Via): void {
+    this.focus = focus;
+    this.scope?.focus(focus, via);
+    Focus.flush();
   }
 
   private confirm(): void {
@@ -78,9 +100,9 @@ export class ConfirmationPrompt {
         <h2 class="confirmation-title">${this.options.title}</h2>
         <p class="confirmation-message">${this.options.message}</p>
         <div class="confirmation-buttons">
-          <button class="confirmation-btn danger ${this.focus === 'confirm' ? 'focused' : ''}"
+          <button class="confirmation-btn danger" data-focusable
                   data-key="confirm" data-confirm-action="confirm">${this.options.confirmLabel}</button>
-          <button class="confirmation-btn ${this.focus === 'cancel' ? 'focused' : ''}"
+          <button class="confirmation-btn" data-focusable
                   data-key="cancel" data-confirm-action="cancel">${this.options.cancelLabel}</button>
         </div>
       </div>
@@ -88,13 +110,10 @@ export class ConfirmationPrompt {
   }
 
   private bindEvents(): void {
-    this.el!.addEventListener('mouseover', (event: MouseEvent) => {
+    this.el!.addEventListener('nav:hover', (event: Event) => {
       const button = (event.target as HTMLElement).closest<HTMLElement>('[data-confirm-action]');
       if (!button) return;
-      const focus = button.dataset.confirmAction === 'confirm' ? 'confirm' : 'cancel';
-      if (focus === this.focus) return;
-      this.focus = focus;
-      this.render();
+      this.moveTo(button.dataset.confirmAction === 'confirm' ? 'confirm' : 'cancel', 'pointer');
     });
 
     this.el!.addEventListener('click', (event: MouseEvent) => {

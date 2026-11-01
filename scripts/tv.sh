@@ -19,6 +19,7 @@
 #   scripts/tv.sh perf [--app <id>] ...   # CDP perf counters, recordings, GC, snapshots
 #   scripts/tv.sh diag [--app <id>] ...   # cold-start redacted diagnostics report
 #   scripts/tv.sh capt ...                # screenshot or record the TV display
+#   scripts/tv.sh input ...               # remote keys, pointer, wheel, wake
 #
 # Pick a non-default device with TV_DEVICE=<name>; override the expect timeout
 # with TV_TIMEOUT=<seconds> (default 120).
@@ -41,6 +42,9 @@ if [ "$action" = "diag" ]; then
 fi
 if [ "$action" = "capt" ]; then
   exec node "$(dirname "$0")/tv-capt.mjs" "$@"
+fi
+if [ "$action" = "input" ]; then
+  exec node "$(dirname "$0")/tv-input.mjs" "$@"
 fi
 
 info=$(ares-setup-device -F -j 2>/dev/null) || { echo "tv.sh: ares-setup-device failed" >&2; exit 1; }
@@ -121,9 +125,23 @@ if {!$interactive} {
     timeout { puts stderr "tv.sh: connection timed out"; exit 1 }
     eof {}
   }
+  # Keep only ssh's own error lines; the pty may also echo typed input.
+  set ssh_error ""
+  set ssh_output ""
+  if {[info exists expect_out(buffer)]} { set ssh_output $expect_out(buffer) }
+  foreach line [split $ssh_output "\n"] {
+    set line [string trim $line]
+    if {[regexp {^ssh: |Permission denied} $line]} { set ssh_error $line }
+  }
   catch wait auth
   if {[lindex $auth 3] != 0} {
-    puts stderr "tv.sh: ssh authentication failed"
+    if {[string match "*Connection refused*" $ssh_error]} {
+      puts stderr "tv.sh: the TV refused SSH on port $env(TV_PORT); Developer Mode may be off"
+    } elseif {[string length $ssh_error] > 0} {
+      puts stderr "tv.sh: $ssh_error"
+    } else {
+      puts stderr "tv.sh: ssh authentication failed"
+    }
     exit [lindex $auth 3]
   }
   log_user 1
@@ -262,7 +280,7 @@ EOF
     run_transport
     ;;
   *)
-    echo "usage: tv.sh {run '<command>' | push <local> <remote> | pull <remote> <local> | shell | reboot | logs ... | eval '<js>' | perf ... | diag ... | capt ...}" >&2
+    echo "usage: tv.sh {run '<command>' | push <local> <remote> | pull <remote> <local> | shell | reboot | logs ... | eval '<js>' | perf ... | diag ... | capt ... | input ...}" >&2
     exit 2
     ;;
 esac

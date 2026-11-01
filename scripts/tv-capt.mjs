@@ -9,54 +9,90 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { formatOptions, parseArgs } from './cli-args.mjs';
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const TV_SCRIPT = join(SCRIPT_DIR, 'tv.sh');
-const REMOTE_HELPER = join(SCRIPT_DIR, 'tv-capt-remote.js');
-const REMOTE_NAME_PREFIX = 'webos-iptv-capt-';
-const REMOTE_NODE_PATH = '/usr/lib/node_modules:/usr/lib/nodejs';
 const METHODS = new Map([
   ['blended', 'BLENDED'],
   ['display', 'DISPLAY'],
   ['video-only', 'VIDEO_ONLY'],
 ]);
 
-const usage = `Capture the LG webOS TV display through its system capture service.
+export const CAPTURE_SPEC = {
+  commands: ['screenshot', 'record'],
+  maxPositionals: 1,
+  options: {
+    method: {
+      type: 'string',
+      choices: [...METHODS.keys()],
+      default: 'blended',
+      valueName: '<name>',
+      description: 'Capture method',
+    },
+    width: {
+      type: 'integer',
+      positive: true,
+      max: 7680,
+      default: 1920,
+      valueName: '<pixels>',
+      description: 'Output width',
+    },
+    height: {
+      type: 'integer',
+      positive: true,
+      max: 7680,
+      default: 1080,
+      valueName: '<pixels>',
+      description: 'Output height',
+    },
+    duration: {
+      type: 'number',
+      positive: true,
+      max: 300,
+      default: 10,
+      commands: ['record'],
+      valueName: '<sec>',
+      description: 'Recording duration',
+    },
+    fps: {
+      type: 'integer',
+      positive: true,
+      max: 10,
+      default: 5,
+      commands: ['record'],
+      valueName: '<number>',
+      description: 'Target recording frame rate',
+    },
+    quality: {
+      type: 'integer',
+      positive: true,
+      max: 100,
+      default: 85,
+      commands: ['record'],
+      valueName: '<percent>',
+      description: 'Recording JPEG quality',
+    },
+    help: { type: 'boolean', short: 'h', description: 'Show this help' },
+  },
+};
+
+export const CAPTURE_HELP = `Capture the LG webOS TV display through its system capture service.
 
 Usage:
   scripts/tv.sh capt screenshot [output.png] [options]
   scripts/tv.sh capt record [output.mp4] [options]
 
-Options:
-  --method <name>    blended (default), display, or video-only
-  --width <pixels>   output width (default: 1920)
-  --height <pixels>  output height (default: 1080)
-  --duration <sec>   recording duration (default: 10, maximum: 300)
-  --fps <number>     target recording frame rate (default: 5, maximum: 10)
-  --quality <1-100>  recording JPEG quality (default: 85)
-  -h, --help         show this help
+${formatOptions(CAPTURE_SPEC)}
 
 Recording streams each frame to this computer immediately, requires ffmpeg,
 and captures video without audio.
 Protected DRM video is intentionally denied or blacked out by webOS.
 `;
 
-const numberOption = (value, name, { integer = false, maximum = Infinity } = {}) => {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number <= 0 || number > maximum
-      || (integer && !Number.isInteger(number))) {
-    throw new Error(`${name} must be a positive${integer ? ' integer' : ''}`
-      + (maximum < Infinity ? ` no greater than ${maximum}` : ''));
-  }
-  return number;
-};
-
-const requiredValue = (args, index, option) => {
-  const value = args[index + 1];
-  if (!value || value.startsWith('--')) throw new Error(`${option} requires a value`);
-  return value;
-};
-
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const TV_SCRIPT = join(SCRIPT_DIR, 'tv.sh');
+const REMOTE_HELPER = join(SCRIPT_DIR, 'tv-capt-remote.js');
+const REMOTE_NAME_PREFIX = 'webos-iptv-capt-';
+const REMOTE_NODE_PATH = '/usr/lib/node_modules:/usr/lib/nodejs';
 const timestamp = (now = new Date()) => {
   const part = (value) => String(value).padStart(2, '0');
   return [
@@ -75,77 +111,26 @@ export function parseCaptureArgs(args, { now = new Date() } = {}) {
     return { help: true };
   }
   const mode = args[0];
-  if (mode !== 'screenshot' && mode !== 'record') {
+  if (!CAPTURE_SPEC.commands.includes(mode)) {
     throw new Error('capture mode must be screenshot or record');
   }
+  const { values, positionals } = parseArgs(args, CAPTURE_SPEC);
 
   const options = {
     help: false,
     mode,
-    method: 'BLENDED',
-    width: 1920,
-    height: 1080,
-    duration: 10,
-    fps: 5,
-    quality: 85,
+    method: METHODS.get(values.method),
+    width: values.width,
+    height: values.height,
+    duration: values.duration,
+    fps: values.fps,
+    quality: values.quality,
     output: '',
   };
-  let positional = '';
-
-  for (let index = 1; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg.startsWith('-')) {
-      if (positional) throw new Error(`unexpected argument: ${arg}`);
-      positional = arg;
-      continue;
-    }
-    if (arg === '--method') {
-      const value = requiredValue(args, index, arg);
-      const method = METHODS.get(value.toLowerCase());
-      if (!method) throw new Error('--method must be blended, display, or video-only');
-      options.method = method;
-      index += 1;
-    } else if (arg === '--width' || arg === '--height') {
-      options[arg.slice(2)] = numberOption(
-        requiredValue(args, index, arg),
-        arg,
-        { integer: true, maximum: 7680 },
-      );
-      index += 1;
-    } else if (arg === '--duration') {
-      options.duration = numberOption(
-        requiredValue(args, index, arg),
-        arg,
-        { maximum: 300 },
-      );
-      index += 1;
-    } else if (arg === '--fps') {
-      options.fps = numberOption(
-        requiredValue(args, index, arg),
-        arg,
-        { integer: true, maximum: 10 },
-      );
-      index += 1;
-    } else if (arg === '--quality') {
-      options.quality = numberOption(
-        requiredValue(args, index, arg),
-        arg,
-        { integer: true, maximum: 100 },
-      );
-      index += 1;
-    } else {
-      throw new Error(`unknown option: ${arg}`);
-    }
-  }
-
-  if (mode === 'screenshot'
-      && (args.includes('--duration') || args.includes('--fps') || args.includes('--quality'))) {
-    throw new Error('--duration, --fps, and --quality are only valid for record');
-  }
   const defaultName = mode === 'screenshot'
     ? `tv-screenshot-${timestamp(now)}.png`
     : `tv-recording-${timestamp(now)}.mp4`;
-  options.output = resolve(positional || defaultName);
+  options.output = resolve(positionals[0] || defaultName);
   const extension = extname(options.output).toLowerCase();
   if (mode === 'screenshot' && !['.png', '.jpg', '.jpeg'].includes(extension)) {
     throw new Error('screenshot output must end in .png, .jpg, or .jpeg');
@@ -415,7 +400,7 @@ if (isMain) {
   try {
     const options = parseCaptureArgs(process.argv.slice(2));
     if (options.help) {
-      process.stdout.write(usage);
+      process.stdout.write(CAPTURE_HELP);
     } else {
       await runCapture(options);
     }

@@ -1,12 +1,20 @@
 // @vitest-environment jsdom
 // src/components/subtitle-search-overlay.test.ts
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { SubtitleSearchOverlay } from './subtitle-search-overlay';
+import { Focus, Tier } from '../navigation/focus-scope';
+import { setInputMode } from '../navigation/input-mode';
 import type { OnlineSubtitleResult } from '../services/subtitle-search/types';
 
 function res(over: Partial<OnlineSubtitleResult>): OnlineSubtitleResult {
   return { providerId: 'subdl', id: 'i', language: 'l1', releaseName: 'Rel', fileName: 'f.srt', format: 'srt', hearingImpaired: false, downloads: 0, ...over };
 }
+
+afterEach(() => {
+  Focus.uninstall();
+  setInputMode('pointer');
+  document.body.innerHTML = '';
+});
 
 describe('SubtitleSearchOverlay', () => {
   it('lists results and fires onPick on select', () => {
@@ -144,6 +152,161 @@ describe('SubtitleSearchOverlay', () => {
     overlay.handleAction('up');
     expect(document.activeElement).toBe(container.querySelector('.subs-search-input'));
     container.remove();
+  });
+
+  it('moves the ring with the pointer, and the next key steps from where it rests', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' }), res({ id: 'c' }), res({ id: 'd' })], '', 'Title');
+    const rows = () => Array.from(container.querySelectorAll<HTMLElement>('.subs-row'));
+    rows()[2].dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    expect(rows().map((r) => r.classList.contains('focused'))).toEqual([false, false, true, false]);
+    overlay.handleAction('down');
+    expect(rows().map((r) => r.classList.contains('focused'))).toEqual([false, false, false, true]);
+  });
+
+  it('hides the list ring while the search box has the caret, and restores it on the way back', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' })], '', 'Title');
+    overlay.handleAction('up');
+    Focus.flush();
+    expect(container.querySelectorAll('.focused')).toHaveLength(0);
+    overlay.handleAction('back');
+    expect(container.querySelector('.subs-row')!.classList.contains('focused')).toBe(true);
+  });
+
+  it('keeps the ring off a row hovered while the box has the caret, and Down lands on it', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' }), res({ id: 'c' }), res({ id: 'd' })], '', 'Title');
+    const input = container.querySelector<HTMLInputElement>('.subs-search-input')!;
+    const rows = () => Array.from(container.querySelectorAll<HTMLElement>('.subs-row'));
+    overlay.handleAction('up');
+    expect(document.activeElement).toBe(input);
+    rows()[2].dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    Focus.flush();
+    expect(container.querySelectorAll('.focused')).toHaveLength(0);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(document.activeElement).not.toBe(input);
+    expect(rows().map((r) => r.classList.contains('focused'))).toEqual([false, false, true, false]);
+  });
+
+  it('gives up the caret to a scope that takes the keys, and is back in the list after it', () => {
+    const container = document.createElement('div');
+    const menu = document.createElement('div');
+    document.body.append(container, menu);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' })], '', 'Title');
+    const input = container.querySelector<HTMLInputElement>('.subs-search-input')!;
+    overlay.handleAction('up');
+    Focus.flush();
+    expect(document.activeElement).toBe(input);
+    const above = Focus.register({ id: 'test.menu', root: menu, tier: Tier.overlay });
+    Focus.push(above);
+    Focus.flush();
+    expect(document.activeElement).not.toBe(input);
+    Focus.pop(above);
+    Focus.flush();
+    expect(container.querySelector('.subs-row')!.classList.contains('focused')).toBe(true);
+  });
+
+  it('leaves no reveal waiting when the caret leaves while another scope owns the keys', () => {
+    setInputMode('keys');
+    const container = document.createElement('div');
+    const menu = document.createElement('div');
+    document.body.append(container, menu);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' })], '', 'Title');
+    overlay.handleAction('up');
+    Focus.flush();
+    const row = container.querySelector<HTMLElement>('.subs-row')!;
+    // Below the fold, so a reveal would scroll it.
+    row.getBoundingClientRect = () =>
+      ({ top: 2000, bottom: 2050, left: 0, right: 100, width: 100, height: 50 } as DOMRect);
+    const scrolled = vi.fn();
+    row.scrollIntoView = scrolled;
+    const above = Focus.register({ id: 'test.menu', root: menu, tier: Tier.overlay });
+    Focus.push(above);
+    Focus.flush();
+    expect(document.activeElement).not.toBe(container.querySelector('.subs-search-input'));
+
+    Focus.pop(above);
+    Focus.flush();
+
+    expect(scrolled).not.toHaveBeenCalled();
+    expect(container.querySelector('.subs-row')!.classList.contains('focused')).toBe(true);
+  });
+
+  it('drops the focused row when a status replaces the list, so nothing reports it repaired', async () => {
+    const logs: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logs.push(args.join(' ')); });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, () => overlay.showStatus('Downloading…'), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' })], '', 'Title');
+    overlay.handleAction('down');
+    overlay.handleAction('select');
+    Focus.flush();
+    await Promise.resolve();
+    expect(container.textContent).toContain('Downloading…');
+    expect(logs.filter((l) => l.includes('event=nav.focus.repaired'))).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it('leaves results that arrive while the box has the caret unlit until Down', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' })], '', 'Title');
+    const input = container.querySelector<HTMLInputElement>('.subs-search-input')!;
+    overlay.handleAction('up');
+    overlay.showStatus('Searching…');
+    overlay.open([res({ id: 'b' }), res({ id: 'c' })], '', 'Title');
+    Focus.flush();
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelectorAll('.focused')).toHaveLength(0);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(container.querySelector('.subs-row')!.classList.contains('focused')).toBe(true);
+  });
+
+  it('lights the row it rests on however the caret leaves the box, so Down steps from it', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' }), res({ id: 'b' }), res({ id: 'c' }), res({ id: 'd' })], '', 'Title');
+    const input = container.querySelector<HTMLInputElement>('.subs-search-input')!;
+    const rows = () => Array.from(container.querySelectorAll<HTMLElement>('.subs-row'));
+    const lit = () => rows().map((r) => r.classList.contains('focused'));
+
+    overlay.handleAction('up');
+    input.blur();
+    expect(lit()).toEqual([true, false, false, false]);
+    overlay.handleAction('down');
+    expect(lit()).toEqual([false, true, false, false]);
+
+    overlay.handleAction('up');
+    overlay.handleAction('up');
+    expect(document.activeElement).toBe(input);
+    rows()[2].dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
+    input.blur();
+    expect(lit()).toEqual([false, false, true, false]);
+    overlay.handleAction('down');
+    expect(lit()).toEqual([false, false, false, true]);
+  });
+
+  it('takes the caret out of the box when it closes', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const overlay = new SubtitleSearchOverlay(container, vi.fn(), vi.fn(), vi.fn());
+    overlay.open([res({ id: 'a' })], '', 'Title');
+    const input = container.querySelector<HTMLInputElement>('.subs-search-input')!;
+    input.focus();
+    overlay.close();
+    expect(document.activeElement).not.toBe(input);
   });
 
   it('Back from the search box returns to the list; Back from the list closes', () => {

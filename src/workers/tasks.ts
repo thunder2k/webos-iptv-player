@@ -84,17 +84,132 @@ export type XMLTVWorkerChunk =
       chunks: number;
     };
 
+export type SearchIndexSource = 'channels' | 'programmes' | 'movies' | 'series';
+
+export interface SearchCacheRecord {
+  store: 'playlist-cache' | 'epg-cache' | 'catalog-cache';
+  key: string;
+  timestamp: number;
+}
+
+/** A few documents as the main thread sees them, to catch a drifted record. */
+export interface SearchDocumentSamples {
+  indices: number[];
+  documents: string[][];
+}
+
+/** Channel documents read from the playlist-cache record. */
+export interface SearchCachedChannels {
+  record: SearchCacheRecord;
+  length: number;
+  /** Record index of each document, in display order. */
+  selection: Uint32Array;
+  /** Documents whose display fields differ from the source name and group. */
+  overrideIndices: number[];
+  overrides: string[][];
+  samples: SearchDocumentSamples;
+}
+
+/**
+ * Programme documents read from epg-cache records: each run is one channel's
+ * programme list, joined with that channel document's name and group.
+ */
+export interface SearchCachedProgrammes {
+  records: SearchCacheRecord[];
+  runChannels: Uint32Array;
+  runRecords: Uint32Array;
+  runIds: string[];
+  runCounts: Uint32Array;
+  samples: SearchDocumentSamples;
+}
+
+/** Name documents read from a catalog-cache record. */
+export interface SearchCachedNames {
+  record: SearchCacheRecord;
+  length: number;
+  /** Record index of each document; null keeps every record item in order. */
+  selection: Uint32Array | null;
+  samples: SearchDocumentSamples;
+}
+
+/**
+ * One slice of a source posted from the main thread. The worker stages slices
+ * in order and swaps the source in once `total` documents have arrived.
+ */
+export interface SearchIndexChunk {
+  source: SearchIndexSource;
+  start: number;
+  total: number;
+  /** Channel or programme field lists. */
+  documents?: string[][];
+  /** Movie or series names. */
+  names?: string[];
+}
+
 export interface SearchIndexRequest {
   sessionId: number;
   reset?: boolean;
-  channels?: string[][];
-  programmes?: string[][];
-  movies?: string[];
-  series?: string[];
+  chunk?: SearchIndexChunk;
+  cachedChannels?: SearchCachedChannels;
+  cachedProgrammes?: SearchCachedProgrammes;
+  cachedMovies?: SearchCachedNames;
+  cachedSeries?: SearchCachedNames;
+}
+
+export interface SearchIndexUnresolved {
+  source: SearchIndexSource;
+  reason: string;
 }
 
 export interface SearchIndexResponse {
   accepted: boolean;
+  /** Cached sources the worker could not read; post them as arrays instead. */
+  unresolved?: SearchIndexUnresolved[];
+  /** Source indexes the worker built and could store, pending a reservation. */
+  persist?: SearchIndexCandidate[];
+  /** Source records served from a prepared index vs folded from the record. */
+  loaded?: { persisted: number; built: number };
+}
+
+/** A built source index, sized for the page's cache reservation. */
+export interface SearchIndexCandidate {
+  key: string;
+  /** Key prefix shared by every index of the same source record. */
+  prefix: string;
+  bytes: number;
+}
+
+export interface SearchIndexPersistEntry {
+  key: string;
+  prefix: string;
+  /** Cache bookkeeping fields the page reserved for the record. */
+  fields: Record<string, unknown>;
+}
+
+export interface SearchIndexPersistRequest {
+  entries: SearchIndexPersistEntry[];
+}
+
+export interface SearchIndexPersistResponse {
+  written: string[];
+  /** Writes that failed; the worker cannot log to the TV's page console. */
+  failed?: Array<{ key: string; reason: string }>;
+}
+
+/** A source cache record to index ahead of Search; no timestamp means look it up. */
+export interface SearchPrewarmSource {
+  store: SearchCacheRecord['store'];
+  key: string;
+  timestamp?: number;
+}
+
+export interface SearchPrewarmRequest {
+  sources: SearchPrewarmSource[];
+}
+
+export interface SearchPrewarmResponse {
+  persist: SearchIndexCandidate[];
+  skipped?: Array<{ store: SearchCacheRecord['store']; reason: string }>;
 }
 
 export interface SearchQueryRequest {
@@ -173,6 +288,14 @@ export interface AppWorkerTasks {
   'search.query': {
     request: SearchQueryRequest;
     response: SearchQueryResponse | null;
+  };
+  'search.prewarm': {
+    request: SearchPrewarmRequest;
+    response: SearchPrewarmResponse;
+  };
+  'search.persist': {
+    request: SearchIndexPersistRequest;
+    response: SearchIndexPersistResponse;
   };
   'list-search.index': {
     request: ListSearchIndexRequest;

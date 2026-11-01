@@ -30,6 +30,7 @@ import { StartupWatchdog, type StartupFailure, type StartupProbe } from '../util
 import { resolutionBadge, hdrLabel, frameRateLabel, pickVariant, codecName, audioSummary, subtitleSummary, type StreamVariant, type MediaInfo } from '../utils/stream-info';
 import { extFromUrl, diagnosticStreamUrl, streamUrlMime } from '../utils/url';
 import { isWebOS } from '../utils/platform';
+import { InputMode } from '../navigation/input-mode';
 import { probeMedia } from '../services/media-probe';
 import { ChannelHealthService } from '../services/channel-health';
 import { createLogger } from '../utils/logger';
@@ -76,6 +77,7 @@ export class Player {
   private upNextSeconds = 0;
   private upNextTimer: ReturnType<typeof setInterval> | null = null;
   private upNextAuthorized = false;
+  private vodTracksLatePending = false;
   private pendingResumeSecs = 0;
   private pendingSeekTarget: number | null = null;
   private wasPlayingBeforeHide = false;
@@ -105,6 +107,8 @@ export class Player {
   private stallWatchdog: StallWatchdog;
   private startupWatchdog: StartupWatchdog;
   private startupPending = false;
+  // The user paused the element; startup, reloads, and `play` clear it.
+  private userPaused = false;
   private liveSessionActive = false;
   private playbackActive = false;
   private livePreviewMode = false;
@@ -271,6 +275,7 @@ export class Player {
     // the attach by up to MANIFEST_TIMEOUT — and recreateVideoEl() loads a
     // sourceless element, which is not a startup attempt.
     onCurrent('loadstart', () => {
+      this.vodTracksLatePending = false;
       if (!el.currentSrc && !el.getAttribute('src') && !el.querySelector('source')) return;
       this.startupWatchdog.start();
     });
@@ -278,6 +283,10 @@ export class Player {
       update();
       log.info('loadedmetadata', this.videoLabel(el), el.videoWidth + 'x' + el.videoHeight,
         this.mediaState(el), '| pendingResume:', this.pendingResumeSecs);
+      if (this.vod) {
+        this.logVodTracks(el);
+        this.vodTracksLatePending = true;
+      }
       if ((this.vod || this.catchupInfo) && this.pendingResumeSecs > 0 && Number.isFinite(el.duration) && el.duration > 0) {
         const target = Math.min(this.pendingResumeSecs, el.duration - 1);
         log.info('resume seek', this.videoLabel(el), '| requested:', this.pendingResumeSecs,
@@ -306,10 +315,19 @@ export class Player {
     });
     // Some platforms populate audio/text tracks asynchronously, after loadedmetadata.
     el.audioTracks?.addEventListener?.('addtrack', () => {
-      if (el === this.videoEl) this.tracks.applyNativeAudioSelection();
+      if (el !== this.videoEl) return;
+      this.logLateVodTracks(el, null);
+      this.tracks.applyNativeAudioSelection();
     });
-    el.textTracks?.addEventListener?.('addtrack', () => {
-      if (el === this.videoEl) this.tracks.applyNativeSubtitleSelection();
+    el.textTracks?.addEventListener?.('addtrack', (e: TrackEvent) => {
+      if (el !== this.videoEl) return;
+      this.logLateVodTracks(el, e.track as TextTrack | null);
+      this.tracks.applyNativeSubtitleSelection();
+    });
+    // Any unpause, the pipeline's own play() included, ends the user's pause; a
+    // `play` queued before a quick re-pause finds the element paused again.
+    onCurrent('play', () => {
+      if (!el.paused) this.userPaused = false;
     });
     onCurrent('playing', () => {
       this.startupPending = false;
@@ -426,6 +444,7 @@ export class Player {
   private recreateVideoEl(): void {
     const old = this.videoEl;
     if (!old) return;
+    this.userPaused = false;
     old.pause();
     old.removeAttribute('src');
     old.innerHTML = '';
@@ -656,6 +675,44 @@ export class Player {
 
   isVod(): boolean { return this.vod !== null; }
 
+  // Right opens the VOD menu unless it can seek (OSD up with a usable
+  // duration), or the subtitle search overlay or up-next countdown owns the key.
+  vodRightOpensMenu(): boolean {
+    return !this.canSeek() && !this.tracks.isSubtitleSearchOpen() && this.upNextTimer === null;
+  }
+
+  // Back hides the OSD of a stream the user paused before it stops playback:
+  // that OSD never auto-hides, and with it hidden Right reaches the menu. A
+  // playing or still-starting stream's OSD hides by itself, a reconnect or
+  // error message would only re-show, and a cursor still on screen re-reveals
+  // it, so Back stops right away then.
+  hideOsdForBack(): boolean {
+    if (!this.userPaused || !this.videoEl?.paused || !this.osd.isVisible()
+        || this.osd.showsMessage() || this.tracks.isSubtitleSearchOpen()
+        || this.upNextTimer !== null || InputMode.keyAfterPointer) return false;
+    // Back skips handleAction, which drops a stale pointer before OK seeks to it.
+    this.osd.clearPointer();
+    this.osd.hide();
+    return true;
+  }
+
+  // `audio=none` means the engine lacks the audioTracks API, unlike an empty
+  // list; under MSE the element's audioTracks don't describe the stream.
+  private logVodTracks(el: HTMLVideoElement, phase?: 'late'): void {
+    log.info('VOD tracks', 'event=vod.tracks', ...(phase ? [`phase=${phase}`] : []),
+      `audio=${el.audioTracks ? el.audioTracks.length : 'none'}`,
+      `text=${this.tracks.nativeTextTrackCount(el.textTracks)}`,
+      `mse=${this.pipeline.isMseActive() ? 1 : 0}`);
+  }
+
+  // Tracks can arrive after loadedmetadata; report the first such add once per load.
+  private logLateVodTracks(el: HTMLVideoElement, track: TextTrack | null): void {
+    if (!this.vod || !this.vodTracksLatePending) return;
+    if (track && this.tracks.ownsTextTrack(track)) return;
+    this.vodTracksLatePending = false;
+    this.logVodTracks(el, 'late');
+  }
+
   playVod(v: VodPlayback): void {
     this.authorizeVod(v, () => this.playVodResolved(v));
   }
@@ -789,16 +846,16 @@ export class Player {
     this.tracks.closeSubtitleSearch();
   }
 
+  subtitleSearchAvailable(): boolean {
+    return this.tracks.subtitleSearchAvailable();
+  }
+
+  openSubtitleSearch(): void {
+    void this.tracks.openSubtitleSearch();
+  }
+
   openSubtitleOffset(): void {
     this.tracks.openSubtitleOffset();
-  }
-
-  subtitleOffsetOpen(): boolean {
-    return this.tracks.subtitleOffsetOpen();
-  }
-
-  handleSubtitleOffsetAction(action: Action): void {
-    this.tracks.handleSubtitleOffsetAction(action);
   }
 
   closeSubtitleOffset(): void {
@@ -867,8 +924,10 @@ export class Player {
     this.restoreLiveMute();
     this.playbackActive = false;
     this.wasPlayingBeforeHide = false;
+    this.userPaused = false;
     this.startPlaybackGeneration();
     this.clearUpNextTimer();
+    this.vodTracksLatePending = false;
     if (this.vod) this.saveVodResume();
     this.saveCatchupProgress(); // save before the video element is torn down
     this.stallWatchdog.stop();
@@ -956,7 +1015,9 @@ export class Player {
 
   private loadStream(url: string, extras: Record<string, string> | null, opts?: { direct?: boolean }): void {
     this.tracks.resetForLoad();
+    this.vodTracksLatePending = false;
     this.manifestVariants = [];
+    this.userPaused = false;
     this.startupPending = true;
     this.startupWatchdog.stop();
     this.pipeline.load(url, extras, opts);
@@ -1309,9 +1370,11 @@ export class Player {
       if (win && v.currentTime < win.start) {
         v.currentTime = this.oldestDvrTarget(win);
       }
+      this.userPaused = false;
       v.play?.().catch(() => {});
       this.stopDvrPauseTick();
     } else {
+      this.userPaused = true;
       v.pause?.();
       if (this.catchupInfo) this.saveCatchupProgress();
       if (this.isLiveDvr()) this.startDvrPauseTick();
@@ -1329,8 +1392,8 @@ export class Player {
   private startDvrPauseTick(): void {
     this.stopDvrPauseTick();
     this.dvrPauseTick = setInterval(() => {
-      if (this.osd.isVisible() && this.videoEl?.paused && this.isLiveDvr()) this.refreshProgress();
-      else this.stopDvrPauseTick();
+      if (!this.videoEl?.paused || !this.isLiveDvr()) this.stopDvrPauseTick();
+      else if (this.osd.isVisible()) this.refreshProgress();
     }, 1000);
   }
 

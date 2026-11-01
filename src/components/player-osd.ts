@@ -58,6 +58,7 @@ function audioTrackText(name: string): string {
 export class PlayerOsd {
   private visible = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private message = false;
   private pointerX: number | null = null;
   private pointerY: number | null = null;
   // Programme-icon URLs that failed to load, so a re-render omits them instead of
@@ -69,6 +70,7 @@ export class PlayerOsd {
     // they sit over the video plane. The persistent container is marked so the
     // global click handler skips this self-activating subtree.
     container.setAttribute('data-self-activate', '');
+    // eslint-disable-next-line focus/no-raw-pointer-listener -- OSD auto-hide is an activity signal, not focus
     container.addEventListener('mousemove', (e: MouseEvent) => {
       this.pointerX = e.clientX;
       this.pointerY = e.clientY;
@@ -94,6 +96,11 @@ export class PlayerOsd {
 
   isVisible(): boolean {
     return this.visible;
+  }
+
+  // A status message (reconnecting, stream error) rather than playback info.
+  showsMessage(): boolean {
+    return this.visible && this.message;
   }
 
   pointerPosition(): { x: number | null; y: number | null } {
@@ -140,6 +147,7 @@ export class PlayerOsd {
   render(): void {
     const osd = $('#player-osd', this.container);
     if (!osd) return;
+    this.message = false;
     const state = this.callbacks.getSnapshot();
     if (state.vodTitle !== null) {
       this.renderVod(osd, state);
@@ -255,6 +263,7 @@ export class PlayerOsd {
     const osd = $('#player-osd', this.container);
     if (!osd) return;
     morph(osd, html`<div class="osd-message">${message}</div>`);
+    this.message = true;
     // Keep the OSD visible so metadata can repaint over this once the stream
     // recovers (else "Reconnecting..." sticks) and it auto-hides otherwise.
     this.visible = true;

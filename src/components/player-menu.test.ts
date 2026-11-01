@@ -21,6 +21,7 @@ vi.mock('../services/playlist-service', () => ({
 }));
 
 import { PlayerMenu } from './player-menu';
+import { Focus } from '../navigation/focus-scope';
 import type { PlaybackRateState } from '../services/playback-rate';
 
 // Number of colour actions before the "Audio Track" row in the main menu.
@@ -40,6 +41,8 @@ let getSubtitleOffsetState: ReturnType<typeof vi.fn>;
 let openSubtitleOffset: ReturnType<typeof vi.fn>;
 let getPlaybackRateState: ReturnType<typeof vi.fn>;
 let selectPlaybackRate: ReturnType<typeof vi.fn>;
+let subtitleSearchAvailable: ReturnType<typeof vi.fn>;
+let openSubtitleSearch: ReturnType<typeof vi.fn>;
 let menu: PlayerMenu;
 
 beforeEach(() => {
@@ -63,16 +66,20 @@ beforeEach(() => {
   openSubtitleOffset = vi.fn();
   getPlaybackRateState = vi.fn((): PlaybackRateState => ({ available: false, rate: 1 }));
   selectPlaybackRate = vi.fn().mockResolvedValue(true);
+  subtitleSearchAvailable = vi.fn(() => false);
+  openSubtitleSearch = vi.fn();
   menu = new PlayerMenu(
     container, getCurrentChannel, onAction,
     getAudioTracks, selectAudioTrack,
     getSubtitleTracks, selectSubtitleTrack,
     getSubtitleOffsetState, openSubtitleOffset,
     getPlaybackRateState, selectPlaybackRate,
+    subtitleSearchAvailable, openSubtitleSearch,
   );
 });
 
 afterEach(() => {
+  Focus.uninstall();
   vi.useRealTimers();
   document.body.innerHTML = '';
 });
@@ -136,6 +143,84 @@ describe('PlayerMenu', () => {
       expect(scrollIntoView).not.toHaveBeenCalled();
     });
 
+    it('steps a held key instantly and an isolated one through the smooth policy', () => {
+      const list = el.querySelector<HTMLElement>('.menu-items')!;
+      list.style.setProperty('scroll-behavior', 'smooth');
+      const writes: string[] = [];
+      let top = 0;
+      Object.defineProperty(list, 'scrollTop', {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          writes.push(list.style.getPropertyValue('scroll-behavior'));
+          top = value;
+        },
+      });
+      list.getBoundingClientRect = () => ({ top: 100, bottom: 300 }) as DOMRect;
+      for (const item of items()) {
+        item.getBoundingClientRect = () => ({ top: 280, bottom: 340 }) as DOMRect;
+      }
+
+      menu.handleAction('down');
+      vi.advanceTimersByTime(80);
+      menu.handleAction('down');
+      vi.advanceTimersByTime(1000);
+      menu.handleAction('down');
+
+      expect(writes).toEqual(['smooth', 'auto', 'smooth']);
+      expect(list.style.getPropertyValue('scroll-behavior')).toBe('smooth');
+    });
+
+    function recordListWrites(rowTop: () => number): string[] {
+      const list = el.querySelector<HTMLElement>('.menu-items')!;
+      list.style.setProperty('scroll-behavior', 'smooth');
+      const writes: string[] = [];
+      let top = 0;
+      Object.defineProperty(list, 'scrollTop', {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          writes.push(list.style.getPropertyValue('scroll-behavior'));
+          top = value;
+        },
+      });
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        if (this.classList.contains('menu-items')) return { top: 100, bottom: 300 } as DOMRect;
+        return { top: rowTop(), bottom: rowTop() + 60 } as DOMRect;
+      });
+      return writes;
+    }
+
+    it('opens a sub-menu on its active row without a glide', () => {
+      menu.hide();
+      subtitleTracks = Array.from({ length: 6 }, (_, i) => ({ index: i, label: `Track ${i + 1}`, active: i === 5 }));
+      menu.show();
+      const writes = recordListWrites(() => 280);
+      vi.advanceTimersByTime(1000);
+
+      items().find((i) => i.dataset.menuAction === '__subs_open__')!.click();
+
+      expect(writes).toEqual(['auto']);
+      vi.restoreAllMocks();
+    });
+
+    it('lets a row slide in instead of snapping it, and treats only another row as a held key', () => {
+      let rowTop = 280;
+      const writes = recordListWrites(() => rowTop);
+
+      menu.handleAction('up'); // a key that moves nothing re-reveals the row
+      rowTop = 270; // still sliding in
+      vi.advanceTimersByTime(80);
+      menu.handleAction('up');
+      expect(writes).toEqual(['smooth']);
+
+      rowTop = 280; // a reset left it no closer
+      vi.advanceTimersByTime(20);
+      menu.handleAction('up');
+      expect(writes).toEqual(['smooth', 'smooth']);
+      vi.restoreAllMocks();
+    });
+
     it('select emits the focused action and hides the menu', () => {
       menu.handleAction('down'); // focus "green"
       menu.handleAction('select');
@@ -156,8 +241,18 @@ describe('PlayerMenu', () => {
 
     it('hovering moves the focus highlight', () => {
       el.querySelector<HTMLElement>('[data-menu-action="yellow"]')!
-        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
       expect(items()[2].classList.contains('focused')).toBe(true);
+      expect(el.querySelectorAll('.focused')).toHaveLength(1);
+      menu.handleAction('down');
+      expect(items()[3].classList.contains('focused')).toBe(true);
+    });
+
+    it('leaves a raw mouseover, which a resting pointer fires in key mode, to the key handler', () => {
+      el.querySelector<HTMLElement>('[data-menu-action="yellow"]')!
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      expect(items()[0].classList.contains('focused')).toBe(true);
+      expect(items()[2].classList.contains('focused')).toBe(false);
     });
 
     it('does not stack listeners across re-renders (single emit per click)', () => {
@@ -169,6 +264,62 @@ describe('PlayerMenu', () => {
         .dispatchEvent(new MouseEvent('click', { bubbles: true }));
       expect(onAction).toHaveBeenCalledTimes(1);
     });
+  });
+
+  describe('hide transition', () => {
+    // Chromium 53 predates `once`: it ignores `once` in an options object
+    // and keeps the listener attached after it fires.
+    function ignoreListenerOptions(): { attached: () => number } {
+      const listeners = new Set<EventListenerOrEventListenerObject>();
+      const add = el.addEventListener.bind(el);
+      const remove = el.removeEventListener.bind(el);
+      el.addEventListener = (type: string, fn: EventListenerOrEventListenerObject | null,
+        options?: boolean | AddEventListenerOptions) => {
+        if (type === 'transitionend' && fn) listeners.add(fn);
+        add(type, fn, typeof options === 'object' ? !!options.capture : options);
+      };
+      el.removeEventListener = (type: string, fn: EventListenerOrEventListenerObject | null,
+        options?: boolean | EventListenerOptions) => {
+        if (type === 'transitionend' && fn) listeners.delete(fn);
+        remove(type, fn, options);
+      };
+      return { attached: () => listeners.size };
+    }
+
+    function transitionEnd(): void {
+      el.dispatchEvent(new Event('transitionend'));
+    }
+
+    it('adds the hidden class once the fade-out ends', () => {
+      menu.show();
+      menu.hide();
+      expect(el.classList.contains('hidden')).toBe(false);
+      transitionEnd();
+      expect(el.classList.contains('hidden')).toBe(true);
+    });
+
+    it('keeps no listener behind on an engine without `once`', () => {
+      const engine = ignoreListenerOptions();
+      for (let i = 0; i < 5; i++) {
+        menu.show();
+        menu.hide();
+        transitionEnd();
+      }
+      expect(engine.attached()).toBe(0);
+    });
+
+    it('drops an unfinished fade-out when the menu reopens', () => {
+      const engine = ignoreListenerOptions();
+      menu.show();
+      menu.hide();
+      menu.show();
+      // The fix under test; the class checks below held before it too.
+      expect(engine.attached()).toBe(0);
+      transitionEnd();
+      expect(el.classList.contains('hidden')).toBe(false);
+      expect(menu.visible).toBe(true);
+    });
+
   });
 
   it('hides itself after the idle timeout', () => {
@@ -342,14 +493,17 @@ describe('PlayerMenu', () => {
       expect(menu.visible).toBe(true);
     });
 
-    it('routes the Search online row through selectSubtitleTrack(-3)', () => {
-      subtitleTracks = [{ index: -3, label: 'Search online…', active: false, available: true }];
+    it('opens the Subtitles row for search alone, and Search online closes the menu', () => {
+      subtitleSearchAvailable.mockReturnValue(true);
       menu.show();
       for (let i = 0; i < MENU_ACTIONS; i++) menu.handleAction('down');
       menu.handleAction('select');     // open picker
       menu.handleAction('down');       // move past "Off" to "Search online…"
+      expect(items()[2].dataset.menuAction).toBe('__subs_search__');
       menu.handleAction('select');
-      expect(selectSubtitleTrack).toHaveBeenCalledWith(-3);
+      expect(openSubtitleSearch).toHaveBeenCalledTimes(1);
+      expect(selectSubtitleTrack).not.toHaveBeenCalled();
+      expect(menu.visible).toBe(false);
     });
 
     it('shows a Subtitle Sync row in the subtitles submenu and opens the adjuster', () => {

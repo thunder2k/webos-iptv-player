@@ -61,6 +61,11 @@ const metricPaths = [
   'groups.epg.navigation.p95',
   'groups.epg.navigation.frame.p95',
   'search.xtream.open.p50',
+  'search.xtream.indexBuild.maxFrameGapMs',
+  'search.xtream.indexBuild.longTaskTotalMs',
+  'search.xtream.indexBuild.postMs',
+  'search.xtream.indexBuildWarm.maxFrameGapMs',
+  'search.xtream.indexBuildWarm.longTaskTotalMs',
   'search.xtream.queries.channelsBroad.p50',
   'search.xtream.queries.channelsSparse.p50',
   'search.xtream.queries.moviesBroad.p50',
@@ -69,6 +74,11 @@ const metricPaths = [
   'search.xtream.queries.programsSparse.p50',
   'search.xtream.queries.noMatch.p50',
   'search.m3u.open.p50',
+  'search.m3u.indexBuild.maxFrameGapMs',
+  'search.m3u.indexBuild.longTaskTotalMs',
+  'search.m3u.indexBuild.postMs',
+  'search.m3u.indexBuildWarm.maxFrameGapMs',
+  'search.m3u.indexBuildWarm.longTaskTotalMs',
   'search.m3u.queries.channelsBroad.p50',
   'search.m3u.queries.channelsSparse.p50',
   'search.m3u.queries.programsBroad.p50',
@@ -135,6 +145,11 @@ console.log('metric'.padEnd(40), 'baseline'.padStart(10), 'latest'.padStart(10),
 for (const metricPath of metricPaths) {
   const before = metric(baseline, metricPath);
   const after = metric(latest, metricPath);
+  if (before === null && after !== null) {
+    // A metric added after the baseline was recorded is reported, not gated.
+    console.log(metricPath.padEnd(40), 'new'.padStart(10), after.toFixed(1).padStart(10));
+    continue;
+  }
   if (before === null || after === null) {
     console.error(`Missing metric: ${metricPath}`);
     failed = true;

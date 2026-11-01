@@ -1016,7 +1016,8 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(16px);
   overflow: hidden;
-  z-index: 70;
+  /* Under the menu and sidebar, which open over it and take its keys. */
+  z-index: 65;
 }
 
 .subs-overlay-header {
@@ -1112,7 +1113,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  /* Over the menu and sidebar: it keeps the keys while open. */
+  z-index: 80;
   pointer-events: none;
 }
 

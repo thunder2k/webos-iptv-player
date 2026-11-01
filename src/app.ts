@@ -13,6 +13,9 @@ import {
   flushCacheWrites,
 } from './services/idb-cache';
 import { SetupClient } from './services/setup-client';
+import { SearchIndexPrewarmer } from './services/search-index-store';
+import { CATALOG_STORE, EPG_STORE } from './services/idb-schema';
+import type { SearchPrewarmSource } from './workers/tasks';
 import { setServicePort } from './services/service-http';
 import { isLunaAvailable, lunaRequest, type LunaRequestHandle } from './services/luna';
 import { ChannelList } from './components/channel-list';
@@ -47,6 +50,8 @@ import { isSourceEnabled } from './utils/playlist';
 import { truncate } from './utils/text';
 import { $, show, hide } from './utils/dom';
 import { createLogger, installGlobalErrorHandlers, logEnvironment } from './utils/logger';
+import { FocusRing } from './navigation/focus-ring';
+import { Focus, type FocusScope } from './navigation/focus-scope';
 import type {
   Action,
   NumberEvent,
@@ -102,6 +107,7 @@ class App {
   private epgRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private epgRefreshIntervalMs: number | null | undefined;
   private epgChannelReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly searchPrewarm = new SearchIndexPrewarmer(() => this.searchPrewarmSources());
 
   // How long to wait for StorageService.init() before giving up and
   // continuing with localStorage-only mode. webOS 6's IndexedDB can fail to
@@ -133,6 +139,7 @@ class App {
     ParentalControlService.setChallengeHandler(request =>
       this.parentalPinPrompt.showChallenge(request));
     StorageService.setWriteFailureHandler(() => showToast(t('app.saveFailed')));
+    this.searchPrewarm.watchSourceWrites();
     initLocale(StorageService.getLocalePreference());
     applyAnimationMode(StorageService.getAnimationMode());
     const initialLoadingText = $('#loading-text');
@@ -205,7 +212,7 @@ class App {
     this.epgGrid = new EpgGrid(
       this.views.epg,
       (idx, catchup, scope) => this.playChannel(idx, catchup, scope),
-      () => this.tabBar.focus(),
+      () => this.leaveUp(),
       () => this.openReminderManager('epg'),
     );
     this.reminderManager = new ReminderManager(this.views.reminders, () => {
@@ -281,10 +288,12 @@ class App {
       () => this.player.openSubtitleOffset(),
       () => this.player.getPlaybackRateState(),
       (rate) => this.player.setPlaybackRate(rate),
+      () => this.player.subtitleSearchAvailable(),
+      () => this.player.openSubtitleSearch(),
     );
 
     this.movies = new Movies(this.views.movies, {
-      onRevealTabBar: () => this.tabBar.focus(),
+      onRevealTabBar: () => this.leaveUp(),
       onBack: () => this.goLive(),
       onPlayVod: (req) => {
         this.player.playVod({
@@ -297,7 +306,7 @@ class App {
       },
     });
     this.series = new Series(this.views.series, {
-      onRevealTabBar: () => this.tabBar.focus(),
+      onRevealTabBar: () => this.leaveUp(),
       onBack: () => this.goLive(),
       onPlayVod: (req) => {
         this.player.playVod({
@@ -310,7 +319,7 @@ class App {
       },
     });
     this.search = new Search(this.views.search, {
-      onRevealTabBar: () => this.tabBar.focus(),
+      onRevealTabBar: () => this.leaveUp(),
       onReleaseTabBar: () => this.tabBar.blur(),
       // Step back out to the search box, which a second Back closes.
       onBack: () => {
@@ -356,7 +365,7 @@ class App {
     });
     this.tabBar = new TabBar({
       onSwitch: (section) => this.switchSection(section),
-      onEnter: (section) => this.enterSection(section),
+      onEnter: (section, via) => this.enterSection(section, via),
       onSearchQuery: (query) => this.handleSearchQuery(query),
       onSearchLeave: () => {
         if (this.lastSearchQuery.trim()) {
@@ -368,12 +377,19 @@ class App {
       onSearchClose: () => this.handleSearchClose(),
       onSelectAccount: (id) => this.selectXtreamAccount(id),
       onAccountMenuOpen: () => this.historyDropdown.close('account-menu'),
-      onAccountMenuClose: () => {
-        if (!this.tabBar.searchOpen || !this.tabBar.shown) {
+      onAccountMenuClose: (reason, hit) => {
+        // A click into the content dismissed the menu; that click's select
+        // must reach the content, so don't pull focus back into the box.
+        if (reason === 'outside' || !this.tabBar.searchOpen || !this.tabBar.shown) {
           this.historyDropdown.close('view-change');
           return;
         }
         this.tabBar.focus();
+        // The scrim's own click handler dismisses search next.
+        if (hit && this.historyDropdown.dismissedBy(hit)) return;
+        // So does a tab's or the magnifier's: the switcher's capture-phase
+        // listener closes the menu before the bar's handler acts on it.
+        if (hit?.closest('.tab-bar-item')) return;
         if (!this.lastSearchQuery.trim()) this.openHistoryDropdown();
       },
       onLockNow: () => ParentalControlService.lock('lock-now'),
@@ -381,7 +397,18 @@ class App {
     this.tabBar.init();
 
     KeyHandler.init();
-    KeyHandler.setHandler((action, event) => this.handleKey(action, event));
+    KeyHandler.setHandler((action, event) => {
+      this.handleKey(action, event);
+      // Any key ends a pointer entry's wait, even one that acted elsewhere.
+      FocusRing.reveal('key', action);
+      FocusRing.sync();
+      Focus.input();
+    });
+    this.initFocusScopes();
+    FocusRing.install(() => {
+      const owner = Focus.owner();
+      return { root: owner?.root() ?? null, modal: !!owner?.modal, id: owner?.id };
+    });
     KeyHandler.setChannelCount(() => PlaylistService.channels.length);
 
     this.initSidebarTrigger();
@@ -1002,6 +1029,7 @@ class App {
         }
       }
       this.schedulePlaylistRefresh(true);
+      this.searchPrewarm.schedule('startup');
     } catch (err) {
       log.error('loadData failed:', err);
       this.showView('settings');
@@ -1046,7 +1074,7 @@ class App {
     this.showView('settings');
   }
 
-  private showView(name: ViewName, preserveChannelFocus = false): void {
+  private showView(name: ViewName, preserveChannelFocus = false, resumeChannelFocus = false): void {
     // Every way out of the manager (Back, color keys, tab bar, a reminder)
     // ends management so concealment returns; the manager never stays stacked.
     if (name !== 'parental-controls' && this.isCurrentView('parental-controls')) {
@@ -1070,6 +1098,7 @@ class App {
     this.epgGrid.dismissPrompt(); // never let the catch-up prompt linger across a view change
     this.search.dismissPrompt();
     this.settings.dismissPrompt();
+    this.reminderManager.dismissPrompt();
     for (const [key, el] of Object.entries(this.views)) {
       if (key === 'loading') continue;
       if (key === name) show(el);
@@ -1090,7 +1119,9 @@ class App {
     // Focus the channel entry point on entry — but not while the tab bar holds
     // focus (a live Left/Right preview updates the view beneath it without
     // stealing the focus ring). No-op on first load (render runs after).
-    if (name === 'channels' && !this.tabBar.focused && !preserveChannelFocus) this.channelList.highlightEntryPoint();
+    if (name === 'channels' && !this.tabBar.focused && !preserveChannelFocus) {
+      this.channelList.highlightEntryPoint(resumeChannelFocus);
+    }
 
     // Keep the active tab bound to the shown section view (so returning from
     // Settings, EPG, the player, etc. updates the underline). Skipped while the
@@ -1111,6 +1142,8 @@ class App {
         this.player.stop();
         this.showView('channels');
         this.channelList.render();
+        // A switch from the bar lands on the entry point the bar's Down resumes.
+        if (this.tabBar.focused) this.channelList.highlightEntryPoint();
       }
       return;
     }
@@ -1247,7 +1280,7 @@ class App {
   private openEpg(): void {
     this.epgGrid.focusChannel(this.player.getCurrentIndex());
     this.showView('epg');
-    this.epgGrid.render();
+    this.epgGrid.render(true);
     const renderEpg = () => {
       this.refreshEpgDependentViews();
       this.epgGrid.render();
@@ -1262,6 +1295,7 @@ class App {
     this.channelList.render();
     this.livePreview.refresh();
     void this.search.refreshPrograms();
+    this.searchPrewarm.schedule('epg');
   }
 
   private openReminderManager(origin: 'settings' | 'epg'): void {
@@ -1308,10 +1342,34 @@ class App {
     this.parentalPinPrompt.showVerify(t('settings.parentalControls'), open);
   }
 
-  // Down/Select from the bar: switch to the section and drop focus into content.
-  private enterSection(section: Section): void {
+  // Down/Select/Back from the bar, or a click on a tab: switch to the section
+  // and drop focus into content.
+  private enterSection(section: Section, via: 'key' | 'pointer'): void {
     this.tabBar.setActive(section);
+    // Back into the shown section: re-opening it would drop unsaved edits and
+    // the position the ring comes back to.
+    if (via === 'key' && sectionForView(this.viewStack[this.viewStack.length - 1]) === section) {
+      if (section === 'settings') {
+        this.settings.resumeFocus();
+        return;
+      }
+      // The catalog resumes its tile even when a wheel-scrolled rail no
+      // longer renders it; enter('resume') would fall back to the first.
+      if (section === 'movies' || section === 'series') {
+        (section === 'movies' ? this.movies : this.series).resumeFocus();
+        return;
+      }
+      // A view scope without keys of its own (a plain `view.*`) has nothing to resume.
+      const owner = Focus.owner();
+      if (owner?.logical) owner.enter('resume');
+      return;
+    }
     this.switchSection(section);
+    // The pointer still rests on the tab, so the content's focus waits for a
+    // key. Search keeps the keys in its own box.
+    if (via === 'pointer' && section !== 'search') {
+      FocusRing.defer(this.viewStack[this.viewStack.length - 1]);
+    }
   }
 
   private goLive(): void {
@@ -1322,6 +1380,26 @@ class App {
     this.tabBar.setActive('live');
     this.showView('channels');
     this.channelList.render();
+  }
+
+  // Sources the next Search open will read; an open Search stores its own.
+  private searchPrewarmSources(): SearchPrewarmSource[] {
+    const current = this.viewStack[this.viewStack.length - 1];
+    if (current === 'search' || this.tabBar.searchOpen) return [];
+    const sources: SearchPrewarmSource[] = [];
+    const playlist = PlaylistService.getChannelCacheSource()?.record;
+    if (playlist) sources.push({ ...playlist });
+    for (const record of EpgService.getProgrammeCacheRecords()) {
+      sources.push({ store: EPG_STORE, key: record.url, timestamp: record.timestamp });
+    }
+    const account = this.activeXtreamAccount();
+    if (account) {
+      sources.push(
+        { store: CATALOG_STORE, key: `${account.id}|vod_all` },
+        { store: CATALOG_STORE, key: `${account.id}|series_all` },
+      );
+    }
+    return sources;
   }
 
   private activeXtreamAccount(): PlaylistEntry | null {
@@ -1339,6 +1417,7 @@ class App {
     const account = this.activeXtreamAccount();
     if (!account) return;
     log.info('Xtream account switched to', account.name);
+    this.searchPrewarm.schedule('account');
     this.tabBar.setAccounts(
       StorageService.getPlaylists()
         .filter((p) => p.source === 'xtream' && p.xtream && isSourceEnabled(p)),
@@ -1390,7 +1469,8 @@ class App {
     }
     const current = this.viewStack[this.viewStack.length - 1];
     if (current === 'channels') this.channelList.render();
-    else if (current === 'epg') this.epgGrid.render(false);
+    else if (current === 'epg') this.epgGrid.render();
+    else if (current === 'settings' && concealmentChanged) this.settings.refreshCollectionCounts();
     // The search box can be open over another view, with Search still live behind it.
     if (current === 'search' || this.tabBar.searchOpen) {
       if (concealmentChanged) void this.search.refreshConcealment();
@@ -1491,79 +1571,57 @@ class App {
     }, concealed !== null);
   }
 
-  // Which modal/overlay is holding input, for the key diagnostic timeline: a
-  // "button does nothing" report is usually an unexpected consumer, not a lost key.
-  private keyConsumer(currentView: string): string {
-    if (this.parentalPinPrompt.visible) return 'parental_pin_prompt';
-    if (this.reminderPrompt.visible) return 'reminder_prompt';
-    if (this.epgGrid.isPromptVisible) return 'epg_prompt';
-    if (this.settings.isPromptVisible) return 'settings_prompt';
-    if (this.reminderManager.isPromptVisible) return 'reminder_manager_prompt';
-    if (this.tabBar.focused) return 'tab_bar';
-    if (this.historyDropdown.isOpen) return 'search_history';
-    if (currentView === 'player' && this.player.subtitleOffsetOpen()) return 'subtitle_offset';
-    return `view_${currentView}`;
+  // The one answer to "who gets the next key": handleKey routes by the owner,
+  // the key diagnostic timeline names it, and FocusRing lets only its root
+  // show a ring. A "button does nothing" report is usually an unexpected
+  // owner. Prompts, the tab bar, the sidebar, and the player's overlays push
+  // themselves while shown (the player view still routes the menu's and the
+  // subtitle search's keys); below them the shown view owns the keys.
+  private initFocusScopes(): void {
+    const current = () => this.viewStack[this.viewStack.length - 1];
+    const views = new Map<ViewName, FocusScope>();
+    const own: Partial<Record<ViewName, FocusScope>> = {
+      epg: this.epgGrid.focusScope,
+      channels: this.channelList.focusScope,
+      settings: this.settings.focusScope,
+      'parental-controls': this.parentalControls.focusScope,
+      movies: this.movies.focusScope,
+      series: this.series.focusScope,
+      search: this.search.focusScope,
+      reminders: this.reminderManager.focusScope,
+    };
+    for (const name of Object.keys(this.views) as ViewName[]) {
+      views.set(name, own[name]
+        ?? Focus.register({ id: `view.${name}`, root: this.views[name], leaveFor: { up: 'tabbar' } }));
+    }
+    Focus.setBase(() => views.get(current()) ?? null);
+    Focus.install();
+  }
+
+  // Up off a view's top edge: the keys go wherever the owner hands them.
+  private leaveUp(): void {
+    Focus.owner()?.leave('up');
   }
 
   private handleKey(action: Action, event?: NumberEvent): void {
     const currentView = this.viewStack[this.viewStack.length - 1];
+    const owner = Focus.owner();
 
     log.debug('Key routed', 'event=key.action', `action=${action}`,
-      `view=${currentView}`, `consumer=${this.keyConsumer(currentView)}`,
+      `view=${currentView}`, `owner=${owner?.id ?? 'none'}`,
       `number=${event ? String(event.number) : 'none'}`);
 
     // The digit OSD is body-mounted and outlives every view, so an abandoned
-    // entry must be cleared before a modal gets a chance to swallow this.
+    // or committed entry must be cleared before a modal gets a chance to
+    // swallow this.
     if (action === 'number_cancel') {
       hideNumberEntry();
       return;
     }
+    if (action === 'number') hideNumberEntry();
 
-    // A reminder prompt overlays every view and consumes input first.
-    if (this.parentalPinPrompt.visible) {
-      this.parentalPinPrompt.handleAction(action, event);
-      return;
-    }
-
-    // A reminder prompt overlays every view and consumes input first.
-    if (this.reminderPrompt.visible) {
-      this.reminderPrompt.handleAction(action);
-      return;
-    }
-
-    // The catch-up resume prompt is body-mounted but logically inside the EPG;
-    // consume all actions (including back/blue globals) while it is visible.
-    if (this.epgGrid.isPromptVisible) {
-      this.epgGrid.handleAction(action, event);
-      return;
-    }
-
-    if (this.settings.isPromptVisible) {
-      this.settings.handleAction(action);
-      return;
-    }
-    if (this.reminderManager.isPromptVisible) {
-      this.reminderManager.handleAction(action);
-      return;
-    }
-
-    // The docked tab bar consumes input while it holds focus.
-    if (this.tabBar.focused) {
-      this.tabBar.handleAction(action);
-      return;
-    }
-
-    // Recent searches drop over the current view and take its input.
-    if (this.historyDropdown.isOpen) {
-      this.historyDropdown.handleAction(action);
-      return;
-    }
-
-    // The subtitle-sync adjuster is modal over the player: it consumes all input.
-    if (currentView === 'player' && this.player.subtitleOffsetOpen()) {
-      this.player.handleSubtitleOffsetAction(action);
-      return;
-    }
+    // The scope that owns the keys (by tier, then latest push) takes them first.
+    if (owner?.handle(action, event)) return;
 
     // Direct channel entry: echo the digits while KeyHandler buffers them, in
     // the two views that act on them (the guide and prompts ignore numbers).
@@ -1573,7 +1631,6 @@ class App {
       }
       return;
     }
-    if (action === 'number') hideNumberEntry();
 
     // The manager owns its color keys (Lock all, Clear exceptions).
     if (currentView === 'parental-controls') {
@@ -1617,7 +1674,7 @@ class App {
         } else if (this.menu.visible) {
           // Let the menu step out of its audio sub-menu before closing.
           if (!this.menu.handleBack()) this.menu.hide();
-        } else if (!this.livePreview.returnFromFullscreen(true)) {
+        } else if (!this.player.hideOsdForBack() && !this.livePreview.returnFromFullscreen(true)) {
           this.player.handleAction('back');
         }
         return;
@@ -1633,7 +1690,7 @@ class App {
         this.epgGrid.deactivateFilters();
         this.tabBar.setActive('live');
         this.channelList.render();
-        this.showView('channels');
+        this.showView('channels', false, true);
         return;
       }
       if (currentView === 'settings') {
@@ -1661,12 +1718,16 @@ class App {
       }
     }
 
+    // The first key into a section the pointer entered only shows its focus:
+    // it must not act on an item nobody has seen yet.
+    if (FocusRing.revealForKey(action)) return;
+
     // Delegate to active view
     switch (currentView) {
       case 'channels': {
         if (this.livePreview.handleAction(action)) break;
         const moved = this.channelList.handleAction(action, event);
-        if (action === 'up' && !moved && this.tabBar.shown) this.tabBar.focus();
+        if (action === 'up' && !moved) this.leaveUp();
         break;
       }
       case 'movies':
@@ -1680,11 +1741,14 @@ class App {
         break;
       case 'player':
         if (this.player.isVod()) {
-          // A VOD menu (opened by the pointer) captures D-pad nav; Left closes
-          // it. Otherwise D-pad drives VOD playback (seek / pause / OSD).
+          // An open VOD menu captures D-pad nav; Left or Right closes it. Right
+          // opens it unless the player can seek; with the OSD up (kept up while
+          // paused, until Back hides it), Left/Right seek and D-pad drives playback.
           if (this.menu.visible) {
             if (action === 'up' || action === 'down' || action === 'select') this.menu.handleAction(action);
-            else if (action === 'left') this.menu.hide();
+            else if (action === 'left' || action === 'right') this.menu.hide();
+          } else if (action === 'right' && this.player.vodRightOpensMenu()) {
+            this.menu.show();
           } else {
             this.player.handleAction(action, event);
           }
@@ -1726,8 +1790,8 @@ class App {
         if (action === 'back') {
           this.channelList.render();
           this.showView('channels');
-        } else {
-          this.settings.handleAction(action);
+        } else if (!this.settings.handleAction(action) && action === 'up') {
+          this.leaveUp();
         }
         break;
       case 'reminders':
@@ -1750,15 +1814,19 @@ class App {
       // (title + seek bar) is pointer-revealable; suppress the channel sidebar
       // and the live player menu.
       const vod = this.player.isVod();
+      // A modal over the player, such as the subtitle sync adjuster, keeps
+      // the edge panels shut.
+      const modal = !!Focus.owner()?.modal;
 
       // Protect the full-width area beside and below the OSD too: its edge
       // controls sit next to margins where an imprecise cursor can open a panel.
-      if (!overOsd && !vod && e.clientX < 80 && !this.menu.visible) {
+      const overTabs = !!(e.target as HTMLElement).closest('.player-sidebar .sidebar-tabs');
+      if (!overOsd && !vod && !modal && e.clientX < 80 && !this.menu.visible) {
         this.sidebar.show();
-        this.sidebar.handlePointerMove(e.clientX, false);
+        this.sidebar.handlePointerMove(e.clientX, false, overTabs);
       } else if (this.sidebar.visible) {
         const overSidebar = !!(e.target as HTMLElement).closest('.player-sidebar');
-        const delayingDismiss = this.sidebar.handlePointerMove(e.clientX, overSidebar);
+        const delayingDismiss = this.sidebar.handlePointerMove(e.clientX, overSidebar, overTabs);
         if (!delayingDismiss && !overSidebar
             && e.clientX > this.sidebar.pointerDismissX && !this.sidebar.keyboardOn) {
           // Never dismiss while the keyboard is on — the pointer naturally
@@ -1770,7 +1838,7 @@ class App {
       // Right menu. Live/catch-up and VOD alike; for VOD it shows the VOD action
       // set (Info, Settings) plus any audio/subtitle tracks — the channel rows
       // are hidden, so it's never empty.
-      if (!overOsd && e.clientX > 1840 && !this.sidebar.visible) {
+      if (!overOsd && !modal && e.clientX > 1840 && !this.sidebar.visible) {
         this.menu.show();
       } else if (this.menu.visible) {
         const overMenu = !!(e.target as HTMLElement).closest('.player-menu');

@@ -29,31 +29,60 @@ describe('compat gate module workers', () => {
 });
 
 describe('compat gate unsupported options', () => {
-  it('rejects object-form transfers and abortable event listeners', () => {
+  it('rejects option-object properties Chromium 53 ignores or misreads', () => {
     const violations = scanBundle(`
       worker.postMessage(bytes, { transfer: [bytes.buffer] });
+      target.addEventListener('transitionend', done, { once: true });
       target.addEventListener('click', handler, { signal: controller.signal });
-    `);
+      option.focus({ preventScroll: true });
+    `, { allowlist: [] });
 
     expect(violations).toEqual([
       expect.objectContaining({
         name: 'postMessage transfer options',
-        kind: 'postmessage-option',
+        kind: 'call-option',
         count: 1,
       }),
+      expect.objectContaining({ name: 'once event listener', kind: 'call-option', minChrome: 55, count: 1 }),
       expect.objectContaining({
         name: 'abortable event listener',
-        kind: 'listener-option',
+        kind: 'call-option',
         count: 1,
       }),
+      expect.objectContaining({ name: 'focus preventScroll', kind: 'call-option', minChrome: 64, count: 1 }),
     ]);
   });
 
-  it('allows legacy transfers and supported event-listener options', () => {
+  it('allows legacy transfers and supported option shapes', () => {
     expect(scanBundle(`
       worker.postMessage(bytes, [bytes.buffer]);
-      target.addEventListener('click', handler, { once: true, passive: true });
+      target.addEventListener('click', handler, { capture: true, passive: true });
+      target.addEventListener('click', handler, true);
+      option.focus();
+      configure({ once: true, preventScroll: true });
     `)).toEqual([]);
+  });
+
+  it('tolerates the guarded preventScroll call through the allowlist', () => {
+    expect(scanBundle('option.focus({ preventScroll: true });')).toEqual([]);
+  });
+
+  it('catches shorthand option properties', () => {
+    expect(scanBundle(`
+      const once = true;
+      target.addEventListener('transitionend', done, { once });
+    `)).toEqual([
+      expect.objectContaining({ name: 'once event listener', count: 1 }),
+    ]);
+  });
+
+  it('exempts only as many guarded calls as the allowlist maxCount', () => {
+    expect(scanBundle(`
+      option.focus({ preventScroll: true });
+      other.focus({ preventScroll: true });
+    `)).toEqual([
+      expect.objectContaining({ name: 'focus preventScroll', count: 2 }),
+    ]);
   });
 });
 

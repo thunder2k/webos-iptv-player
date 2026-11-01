@@ -68,6 +68,8 @@ body.tabbar-docked #view-epg .epg-view {
   padding: 4px 2px;
   border-bottom: 3px solid transparent;
   cursor: pointer;
+  /* A clicked tab keeps DOM focus; `.focused` is the only focus look. */
+  outline: none;
 }
 
 .tab-bar-item.active {

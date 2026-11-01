@@ -130,6 +130,26 @@ test('records 50,000-item application benchmarks', async ({
     return route.fulfill({ contentType: 'application/json', body: '[]' });
   });
   await page.addInitScript(() => {
+    // Lets the Search samples wait until the app worker has exited.
+    const workers = { live: 0 };
+    (window as unknown as { __benchmarkAppWorkers: typeof workers }).__benchmarkAppWorkers = workers;
+    const log = console.log;
+    console.log = function (...args: unknown[]) {
+      if (args.indexOf('event=worker.lifecycle.created') !== -1) workers.live++;
+      if (args.indexOf('event=worker.lifecycle.terminated') !== -1) {
+        workers.live = Math.max(0, workers.live - 1);
+      }
+      return log.apply(this, args);
+    };
+    const error = console.error;
+    console.error = function (...args: unknown[]) {
+      if (args.indexOf('event=worker.lifecycle.failed') !== -1) {
+        workers.live = Math.max(0, workers.live - 1);
+      }
+      return error.apply(this, args);
+    };
+  });
+  await page.addInitScript(() => {
     const media = HTMLMediaElement.prototype;
     media.load = function () { /* no-op */ };
     media.play = function () { return Promise.resolve(); };
@@ -335,7 +355,7 @@ async function runDesktopLargePlaylistBenchmark(
   options: LargePlaylistBenchmarkOptions,
 ) {
   const context = await browser.newContext({
-    baseURL: 'http://localhost:3000',
+    baseURL: `http://localhost:${process.env.PREVIEW_PORT || 3000}`,
     viewport: { width: 1920, height: 1080 },
   });
   try {

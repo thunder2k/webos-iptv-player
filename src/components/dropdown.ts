@@ -15,14 +15,16 @@ export function dropdown(
       <span class="dropdown-sizer" aria-hidden="true">
         ${options.map(o => html`<span>${o.label}</span>`)}
       </span>
-      <button class="dropdown-trigger" data-focusable data-dropdown-trigger>
+      <button class="dropdown-trigger" data-focusable data-dropdown-trigger
+              data-key="${id}:trigger" aria-expanded="false">
         <span class="dropdown-current">${current.label}</span>
         <span class="dropdown-caret"></span>
       </button>
       <div class="dropdown-menu">
         ${options.map(o => html`
           <button class="dropdown-option ${o.value === active ? 'active' : ''}"
-                  data-focusable data-dropdown-value="${o.value}">${o.label}</button>
+                  data-focusable data-key="${id}:${o.value}"
+                  data-dropdown-value="${o.value}">${o.label}</button>
         `)}
       </div>
     </div>`;
@@ -42,6 +44,7 @@ export function toggleDropdown(
     return;
   }
   dd.classList.add('open');
+  dd.querySelector('.dropdown-trigger')?.setAttribute('aria-expanded', 'true');
   const opt = dd.querySelector<HTMLElement>('.dropdown-option.active')
     ?? dd.querySelector<HTMLElement>('.dropdown-option');
   if (opt) nav.focus(opt);
@@ -49,6 +52,7 @@ export function toggleDropdown(
 
 export function closeDropdown(nav: SpatialNav, dd: HTMLElement): void {
   dd.classList.remove('open');
+  dd.querySelector('.dropdown-trigger')?.setAttribute('aria-expanded', 'false');
   const trigger = dd.querySelector<HTMLElement>('.dropdown-trigger');
   if (trigger) nav.focus(trigger);
 }
@@ -64,5 +68,6 @@ export function commitDropdownOption(el: HTMLElement): HTMLElement | null {
   const cur = dd.querySelector('.dropdown-current');
   if (cur) cur.textContent = el.textContent;
   dd.classList.remove('open');
+  dd.querySelector('.dropdown-trigger')?.setAttribute('aria-expanded', 'false');
   return dd;
 }

@@ -47,6 +47,9 @@ async function boot(page: Page): Promise<void> {
   await page.goto('/');
   await expect(page.locator('#view-channels')).toBeVisible();
   await expect(page.locator('.channel-main .channel-item')).toHaveCount(4);
+  // Seed the pointer: before its first move, a mouseover can't be told
+  // from content sliding under it, so it is ignored after a key.
+  await page.mouse.move(1, 1);
 }
 
 /** Move focus onto a channel row by pointer, as the Magic Remote would. */
@@ -151,6 +154,113 @@ test('green hides a channel in edit mode and toggles a favorite outside it', asy
   await page.reload();
   await expect(page.locator('#view-channels')).toBeVisible();
   await expect(page.locator('.channel-main .channel-item')).toHaveCount(3);
+});
+
+test('a pointer drag in edit mode reorders channels, even released off the list', async ({ page }) => {
+  await boot(page);
+  await key(page, YELLOW);
+  const rows = page.locator('.channel-main .channel-item');
+  const before = await names(page);
+  const center = async (index: number): Promise<{ x: number; y: number }> => {
+    const box = await rows.nth(index).boundingBox();
+    if (!box) throw new Error('no layout');
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+
+  const from = await center(2);
+  await page.mouse.move(from.x + 2, from.y);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  const to = await center(0);
+  await page.mouse.move(to.x, to.y, { steps: 4 });
+  await expect(rows.first()).toHaveClass(/grabbed/);
+  await page.mouse.move(1, 1, { steps: 4 });
+  await page.mouse.up();
+
+  await expect(page.locator('.channel-main .grabbed')).toHaveCount(0);
+  expect(await names(page)).toEqual([before[2], before[0], before[1], before[3]]);
+});
+
+test('a pointer drag lands above the row it reaches after the grabbed row scrolled away', async ({ page }) => {
+  const lines = ['#EXTM3U'];
+  for (let i = 1; i <= 70; i++) {
+    lines.push(`#EXTINF:-1 group-title="Alpha",Ch ${String(i)}`, `http://host/${String(i)}.m3u8`);
+  }
+  await routePlaylist(page, lines.join('\n'));
+  await seedPlaylist(page);
+  await page.goto('/');
+  const main = page.locator('#view-channels .channel-main');
+  const row = (position: number) => main.locator(`[data-list-position="${String(position)}"]`);
+  await expect(row(0)).toBeVisible();
+  await page.mouse.move(1, 1);
+  await key(page, YELLOW);
+  await expect(page.locator('.edit-hints')).toBeVisible();
+
+  // Row 40 near the bottom of the list, so the wheel brings row 2 in view.
+  const pitch = await main.evaluate((el) => {
+    const rows = el.querySelectorAll<HTMLElement>('[data-list-position]');
+    return rows[1].offsetTop - rows[0].offsetTop;
+  });
+  await main.evaluate((el, step) => { el.scrollTop = 43 * step - el.clientHeight; }, pitch);
+  await expect(row(40)).toBeVisible();
+  await expect(row(39)).toBeVisible();
+  const center = async (position: number): Promise<{ x: number; y: number }> => {
+    const box = await row(position).boundingBox();
+    if (!box) throw new Error('no layout');
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+
+  const from = await center(40);
+  await page.mouse.move(from.x + 2, from.y);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  const up = await center(39);
+  await page.mouse.move(up.x, up.y, { steps: 4 });
+  await expect(row(39)).toHaveClass(/\bgrabbed\b/);
+  await expect(row(39).locator('.channel-name')).toHaveText('Ch 41');
+
+  // Wheel over the list's side padding, which hovers no row.
+  const list = await main.boundingBox();
+  if (!list) throw new Error('no layout');
+  await page.mouse.move(list.x + list.width - 4, up.y);
+  await page.mouse.wheel(0, -30 * pitch);
+  await expect(row(2)).toBeVisible();
+  await expect(main.locator('.grabbed')).toHaveCount(0);
+
+  const to = await center(2);
+  await page.mouse.move(to.x, to.y, { steps: 2 });
+  await expect(row(2)).toHaveClass(/\bgrabbed\b/);
+  await page.mouse.up();
+
+  await expect(main.locator('.grabbed')).toHaveCount(0);
+  await expect(row(2).locator('.channel-name')).toHaveText('Ch 41');
+  await expect(row(3).locator('.channel-name')).toHaveText('Ch 3');
+});
+
+test('a click in edit mode that wobbles onto the next row does not reorder', async ({ page }) => {
+  await boot(page);
+  await key(page, YELLOW);
+  const rows = page.locator('.channel-main .channel-item');
+  const before = await names(page);
+  const [upper, lower] = await Promise.all([rows.nth(1).boundingBox(), rows.nth(2).boundingBox()]);
+  if (!upper || !lower) throw new Error('no layout');
+  const x = upper.x + upper.width / 2;
+  const from = upper.y + upper.height - 1;
+  const to = lower.y + 1;
+  // A pixel either side of the gap between the rows.
+  expect(to - from).toBeLessThan(8);
+
+  await page.mouse.move(x + 2, from);
+  await page.mouse.move(x, from);
+  await expect(rows.nth(1)).toHaveClass(/\bfocused\b/);
+  await page.mouse.down();
+  await page.mouse.move(x, to);
+  await expect(rows.nth(2)).toHaveClass(/\bfocused\b/);
+  await page.mouse.up();
+
+  // The click is OK on the row under the pointer: it grabs, not moves, it.
+  await expect(page.locator('.channel-main .grabbed')).toHaveCount(1);
+  expect(await names(page)).toEqual(before);
 });
 
 test('leaving edit mode through the tab bar keeps hidden channels out of Search', async ({ page }) => {

@@ -506,6 +506,8 @@ export interface VodItem {
   rating: string;
   categoryId: string;
   containerExtension: string;
+  addedAt?: number;
+  year?: number;
 }
 
 // A sidecar subtitle file (SRT or WebVTT) delivered alongside an Xtream VOD
@@ -545,6 +547,8 @@ export interface SeriesItem {
   poster: string;
   rating: string;
   categoryId: string;
+  addedAt?: number;
+  year?: number;
 }
 
 export interface Episode {

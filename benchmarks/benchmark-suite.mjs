@@ -359,15 +359,15 @@ export async function installBenchmarkFixture(options) {
       data,
     }));
     put('vod_categories', categories);
-    put('vod_streams|13', movies);
+    put('vod_streams-v2|13', movies);
     put('vod_all', movies);
     put('series_categories', categories);
-    put('series|13', series);
+    put('series-v2|13', series);
     put('series_all', series);
     put('series_info|s0', { seasons: [1], episodesBySeason: { 1: episodes } });
     for (let category = 7; category <= 12; category++) {
-      put(`vod_streams|${String(category)}`, []);
-      put(`series|${String(category)}`, []);
+      put(`vod_streams-v2|${String(category)}`, []);
+      put(`series-v2|${String(category)}`, []);
     }
     if (directStorage) {
       const progressStore = fixtureTx.objectStore('playback-progress');
@@ -1881,6 +1881,172 @@ export async function runM3USearchBenchmark(options) {
     }
     throw new Error(`Timed out waiting for Search query '${query}'`);
   };
+  // Waits until no stored Search index changes and the app worker has exited,
+  // past the startup prewarm's idle deadline. `clear` then drops every stored
+  // index, so the next open builds each one (cold); otherwise it loads them (warm).
+  const settleSearchIndexes = async (clear, timeout = 120_000) => {
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const withStore = (mode, run) => new Promise((resolve, reject) => {
+      const request = indexedDB.open('iptv');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction('search-index-cache', mode);
+        const pending = run(tx.objectStore('search-index-cache'));
+        tx.oncomplete = () => {
+          db.close();
+          resolve(pending.result);
+        };
+        tx.onabort = () => {
+          db.close();
+          reject(tx.error);
+        };
+      };
+    });
+    const workers = window.__benchmarkAppWorkers;
+    const started = performance.now();
+    while (performance.now() < 6_000) await sleep(250);
+    let count = -1;
+    let quietSince = performance.now();
+    while (performance.now() - quietSince < 2_500) {
+      if (performance.now() - started > timeout) {
+        throw new Error('Stored Search indexes did not settle');
+      }
+      const next = await withStore('readonly', (store) => store.count());
+      if (next !== count || (workers && workers.live > 0)) {
+        count = next;
+        quietSince = performance.now();
+      }
+      await sleep(250);
+    }
+    if (clear) await withStore('readwrite', (store) => store.clear());
+    return count;
+  };
+  // Opens Search and follows the main thread until the worker index is
+  // ready: wall time, the longest frame gap, Long Tasks, the time spent posting
+  // `search.index` payloads, and how many source indexes the worker built
+  // instead of loading them from IndexedDB.
+  const measureSearchIndexBuild = async (open, timeout = 60_000) => {
+    const round = (value) => Math.round(value * 10) / 10;
+    let ready = false;
+    const cacheFallbacks = [];
+    const originalLog = console.log;
+    console.log = function (...args) {
+      if (args.indexOf('event=search.worker.index.ready') !== -1) ready = true;
+      if (args.indexOf('event=search.worker.cache.fallback') !== -1) {
+        cacheFallbacks.push(args.filter((arg) => typeof arg === 'string' && arg.indexOf('=') > 0).join(' '));
+      }
+      return originalLog.apply(this, args);
+    };
+    const workerPrototype = Worker.prototype;
+    const originalPost = workerPrototype.postMessage;
+    let postMs = 0;
+    let posts = 0;
+    const postBySource = {};
+    workerPrototype.postMessage = function (message, ...rest) {
+      if (!message || message.task !== 'search.index') {
+        return originalPost.call(this, message, ...rest);
+      }
+      const started = performance.now();
+      try {
+        return originalPost.call(this, message, ...rest);
+      } finally {
+        const elapsed = performance.now() - started;
+        postMs += elapsed;
+        posts++;
+        const payload = message.payload || {};
+        ['channels', 'programmes', 'movies', 'series'].forEach((source) => {
+          const cached = `cached${source[0].toUpperCase()}${source.slice(1)}`;
+          if (payload[source] === undefined && payload[cached] === undefined) return;
+          postBySource[source] = round((postBySource[source] || 0) + elapsed);
+        });
+      }
+    };
+    // A worker created by this open reports each source index it built.
+    const ownListener = Object.prototype.hasOwnProperty.call(workerPrototype, 'addEventListener');
+    const originalListen = workerPrototype.addEventListener;
+    let workerStarted = false;
+    let built = 0;
+    let counting = true;
+    workerPrototype.addEventListener = function (type, listener, ...rest) {
+      if (type !== 'message') return originalListen.call(this, type, listener, ...rest);
+      workerStarted = true;
+      return originalListen.call(this, type, function (event) {
+        const result = event.data && event.data.result;
+        if (counting && result && Array.isArray(result.persist)) built += result.persist.length;
+        return listener.call(this, event);
+      }, ...rest);
+    };
+    const longTasks = [];
+    let observer = null;
+    if (typeof PerformanceObserver !== 'undefined') {
+      try {
+        observer = new PerformanceObserver((list) => {
+          list.getEntries().forEach((entry) => longTasks.push(entry));
+        });
+        observer.observe({ entryTypes: ['longtask'] });
+      } catch {
+        observer = null;
+      }
+    }
+    let lastFrame = performance.now();
+    let maxFrameGapMs = 0;
+    let frames = 0;
+    let measuring = true;
+    const tick = (now) => {
+      maxFrameGapMs = Math.max(maxFrameGapMs, now - lastFrame);
+      lastFrame = now;
+      frames++;
+      if (measuring) requestAnimationFrame(tick);
+    };
+    const started = performance.now();
+    lastFrame = started;
+    requestAnimationFrame(tick);
+    try {
+      open();
+      const openMs = performance.now() - started;
+      while (!ready) {
+        if (performance.now() - started > timeout) {
+          throw new Error('Timed out waiting for the Search worker index');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const readyMs = performance.now() - started;
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+      const ended = performance.now();
+      maxFrameGapMs = Math.max(maxFrameGapMs, ended - lastFrame);
+      if (observer) {
+        observer.takeRecords().forEach((entry) => longTasks.push(entry));
+      }
+      const tasks = longTasks
+        .filter((entry) => entry.startTime + entry.duration >= started
+          && entry.startTime <= ended)
+        .map((entry) => entry.duration);
+      return {
+        openMs: round(openMs),
+        readyMs: round(readyMs),
+        maxFrameGapMs: round(maxFrameGapMs),
+        frames,
+        longTaskCount: tasks.length,
+        longTaskTotalMs: round(tasks.reduce((total, value) => total + value, 0)),
+        longTaskMaxMs: round(tasks.reduce((max, value) => Math.max(max, value), 0)),
+        postMs: round(postMs),
+        posts,
+        postBySource,
+        cacheFallbacks,
+        workerStarted,
+        built,
+      };
+    } finally {
+      measuring = false;
+      observer?.disconnect();
+      console.log = originalLog;
+      workerPrototype.postMessage = originalPost;
+      counting = false;
+      if (ownListener) workerPrototype.addEventListener = originalListen;
+      else delete workerPrototype.addEventListener;
+    }
+  };
   const icon = document.querySelector('[data-section="search"]');
   if (!icon) throw new Error('Missing M3U Search icon');
   const clickIcon = () => {
@@ -1891,9 +2057,12 @@ export async function runM3USearchBenchmark(options) {
       bubbles: true,
     }));
   };
-  const initialOpenStarted = performance.now();
+  await settleSearchIndexes(true);
+  const indexBuild = await measureSearchIndexBuild(clickIcon);
+  const initialOpenMs = indexBuild.openMs;
   clickIcon();
-  const initialOpenMs = round(performance.now() - initialOpenStarted);
+  const storedIndexes = await settleSearchIndexes(false);
+  const indexBuildWarm = { ...await measureSearchIndexBuild(clickIcon), storedIndexes };
   const input = document.querySelector('.tab-bar-search-input');
   const openValues = [];
   for (let index = 0; index < options.querySamples; index++) {
@@ -1952,6 +2121,8 @@ export async function runM3USearchBenchmark(options) {
   await waitForSearchQuery('program');
   return {
     initialOpenMs,
+    indexBuild,
+    indexBuildWarm,
     open: distribution(openValues),
     queries,
     renderedChannels: document.querySelectorAll('.search-channel-row').length,
@@ -1963,7 +2134,20 @@ export async function runM3USearchBenchmark(options) {
   };
 }
 
+// The cold open must build every source index and the warm one load them all.
+function assertSearchIndexSamples(label, report) {
+  const cold = report.indexBuild;
+  const warm = report.indexBuildWarm;
+  if (!cold.workerStarted || !(cold.built > 0)) {
+    throw new Error(`${label} cold Search open built ${String(cold.built)} indexes on a ${cold.workerStarted ? 'new' : 'running'} worker`);
+  }
+  if (!warm.workerStarted || warm.built !== 0 || !(warm.storedIndexes > 0)) {
+    throw new Error(`${label} warm Search open built ${String(warm.built)} of ${String(warm.storedIndexes)} stored indexes`);
+  }
+}
+
 export function assertM3USearchBenchmark(report) {
+  assertSearchIndexSamples('M3U', report);
   if (!(report.renderedPrograms > 0 && report.renderedPrograms < 30)) {
     throw new Error(
       `M3U Search mounted ${String(report.renderedPrograms)} program rows; expected 1-29`,
@@ -2547,6 +2731,172 @@ export async function runBenchmarkSuites(options) {
         frame: distribution(frameValues),
       };
     };
+    // Waits until no stored Search index changes and the app worker has exited,
+    // past the startup prewarm's idle deadline. `clear` then drops every stored
+    // index, so the next open builds each one (cold); otherwise it loads them (warm).
+    const settleSearchIndexes = async (clear, timeout = 120_000) => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const withStore = (mode, run) => new Promise((resolve, reject) => {
+        const request = indexedDB.open('iptv');
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('search-index-cache', mode);
+          const pending = run(tx.objectStore('search-index-cache'));
+          tx.oncomplete = () => {
+            db.close();
+            resolve(pending.result);
+          };
+          tx.onabort = () => {
+            db.close();
+            reject(tx.error);
+          };
+        };
+      });
+      const workers = window.__benchmarkAppWorkers;
+      const started = performance.now();
+      while (performance.now() < 6_000) await sleep(250);
+      let count = -1;
+      let quietSince = performance.now();
+      while (performance.now() - quietSince < 2_500) {
+        if (performance.now() - started > timeout) {
+          throw new Error('Stored Search indexes did not settle');
+        }
+        const next = await withStore('readonly', (store) => store.count());
+        if (next !== count || (workers && workers.live > 0)) {
+          count = next;
+          quietSince = performance.now();
+        }
+        await sleep(250);
+      }
+      if (clear) await withStore('readwrite', (store) => store.clear());
+      return count;
+    };
+    // Opens Search and follows the main thread until the worker index is
+    // ready: wall time, the longest frame gap, Long Tasks, the time spent posting
+    // `search.index` payloads, and how many source indexes the worker built
+    // instead of loading them from IndexedDB.
+    const measureSearchIndexBuild = async (open, timeout = 60_000) => {
+      const round = (value) => Math.round(value * 10) / 10;
+      let ready = false;
+      const cacheFallbacks = [];
+      const originalLog = console.log;
+      console.log = function (...args) {
+        if (args.indexOf('event=search.worker.index.ready') !== -1) ready = true;
+        if (args.indexOf('event=search.worker.cache.fallback') !== -1) {
+          cacheFallbacks.push(args.filter((arg) => typeof arg === 'string' && arg.indexOf('=') > 0).join(' '));
+        }
+        return originalLog.apply(this, args);
+      };
+      const workerPrototype = Worker.prototype;
+      const originalPost = workerPrototype.postMessage;
+      let postMs = 0;
+      let posts = 0;
+      const postBySource = {};
+      workerPrototype.postMessage = function (message, ...rest) {
+        if (!message || message.task !== 'search.index') {
+          return originalPost.call(this, message, ...rest);
+        }
+        const started = performance.now();
+        try {
+          return originalPost.call(this, message, ...rest);
+        } finally {
+          const elapsed = performance.now() - started;
+          postMs += elapsed;
+          posts++;
+          const payload = message.payload || {};
+          ['channels', 'programmes', 'movies', 'series'].forEach((source) => {
+            const cached = `cached${source[0].toUpperCase()}${source.slice(1)}`;
+            if (payload[source] === undefined && payload[cached] === undefined) return;
+            postBySource[source] = round((postBySource[source] || 0) + elapsed);
+          });
+        }
+      };
+      // A worker created by this open reports each source index it built.
+      const ownListener = Object.prototype.hasOwnProperty.call(workerPrototype, 'addEventListener');
+      const originalListen = workerPrototype.addEventListener;
+      let workerStarted = false;
+      let built = 0;
+      let counting = true;
+      workerPrototype.addEventListener = function (type, listener, ...rest) {
+        if (type !== 'message') return originalListen.call(this, type, listener, ...rest);
+        workerStarted = true;
+        return originalListen.call(this, type, function (event) {
+          const result = event.data && event.data.result;
+          if (counting && result && Array.isArray(result.persist)) built += result.persist.length;
+          return listener.call(this, event);
+        }, ...rest);
+      };
+      const longTasks = [];
+      let observer = null;
+      if (typeof PerformanceObserver !== 'undefined') {
+        try {
+          observer = new PerformanceObserver((list) => {
+            list.getEntries().forEach((entry) => longTasks.push(entry));
+          });
+          observer.observe({ entryTypes: ['longtask'] });
+        } catch {
+          observer = null;
+        }
+      }
+      let lastFrame = performance.now();
+      let maxFrameGapMs = 0;
+      let frames = 0;
+      let measuring = true;
+      const tick = (now) => {
+        maxFrameGapMs = Math.max(maxFrameGapMs, now - lastFrame);
+        lastFrame = now;
+        frames++;
+        if (measuring) requestAnimationFrame(tick);
+      };
+      const started = performance.now();
+      lastFrame = started;
+      requestAnimationFrame(tick);
+      try {
+        open();
+        const openMs = performance.now() - started;
+        while (!ready) {
+          if (performance.now() - started > timeout) {
+            throw new Error('Timed out waiting for the Search worker index');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        const readyMs = performance.now() - started;
+        await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+        const ended = performance.now();
+        maxFrameGapMs = Math.max(maxFrameGapMs, ended - lastFrame);
+        if (observer) {
+          observer.takeRecords().forEach((entry) => longTasks.push(entry));
+        }
+        const tasks = longTasks
+          .filter((entry) => entry.startTime + entry.duration >= started
+            && entry.startTime <= ended)
+          .map((entry) => entry.duration);
+        return {
+          openMs: round(openMs),
+          readyMs: round(readyMs),
+          maxFrameGapMs: round(maxFrameGapMs),
+          frames,
+          longTaskCount: tasks.length,
+          longTaskTotalMs: round(tasks.reduce((total, value) => total + value, 0)),
+          longTaskMaxMs: round(tasks.reduce((max, value) => Math.max(max, value), 0)),
+          postMs: round(postMs),
+          posts,
+          postBySource,
+          cacheFallbacks,
+          workerStarted,
+          built,
+        };
+      } finally {
+        measuring = false;
+        observer?.disconnect();
+        console.log = originalLog;
+        workerPrototype.postMessage = originalPost;
+        counting = false;
+        if (ownListener) workerPrototype.addEventListener = originalListen;
+        else delete workerPrototype.addEventListener;
+      }
+    };
     const searchOpenDistribution = async () => {
       const icon = document.querySelector('[data-section="search"]');
       const slot = document.querySelector('.tab-bar-search');
@@ -2855,9 +3205,17 @@ export async function runBenchmarkSuites(options) {
       episodes,
     };
 
-    const searchInitialStarted = performance.now();
+    await settleSearchIndexes(true);
+    const searchIndexBuild = await measureSearchIndexBuild(
+      () => click('[data-section="search"]'),
+    );
+    const searchInitialOpenMs = searchIndexBuild.openMs;
     click('[data-section="search"]');
-    const searchInitialOpenMs = round(performance.now() - searchInitialStarted);
+    const storedSearchIndexes = await settleSearchIndexes(false);
+    const searchIndexBuildWarm = {
+      ...await measureSearchIndexBuild(() => click('[data-section="search"]')),
+      storedIndexes: storedSearchIndexes,
+    };
     const input = document.querySelector('.tab-bar-search-input');
     input.value = 'movie';
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2911,6 +3269,8 @@ export async function runBenchmarkSuites(options) {
     await waitForSearchQuery('program');
     const search = {
       initialOpenMs: searchInitialOpenMs,
+      indexBuild: searchIndexBuild,
+      indexBuildWarm: searchIndexBuildWarm,
       open: searchOpen,
       queries,
       renderedPrograms: document.querySelectorAll(
@@ -3096,6 +3456,7 @@ export function assertBenchmarkScale(report, scale) {
   bounded('Series', report.series.rendered, 60);
   bounded('Episodes', report.series.episodes.rendered, 20);
   bounded('Search programs', report.search.xtream.renderedPrograms, 30);
+  assertSearchIndexSamples('Xtream', report.search.xtream);
   if (!report.interactions.wheelToDpad.focusedConnected) {
     throw new Error('Wheel-to-D-pad focus is detached');
   }

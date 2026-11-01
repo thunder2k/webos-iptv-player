@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { Focus } from '../navigation/focus-scope';
 import { CatchupResumePrompt } from './catchup-resume-prompt';
 
 let prompt: CatchupResumePrompt;
 beforeEach(() => {
   document.body.innerHTML = '';
-  prompt = new CatchupResumePrompt();
+  prompt = new CatchupResumePrompt('prompt.test');
 });
+afterEach(() => Focus.uninstall());
 
 const buttons = () => Array.from(document.querySelectorAll('.catchup-resume-btn'));
 const focused = () => document.querySelector('.catchup-resume-btn.focused');
@@ -143,7 +145,7 @@ describe('CatchupResumePrompt', () => {
     const onCancel = vi.fn();
     prompt.show('S', 0, { onResume: vi.fn(), onStartOver: vi.fn(), onCancel });
     document.querySelector<HTMLElement>('[data-action="cancel"]')!
-      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
 
     expect(focused()!.textContent?.trim()).toBe('Cancel');
     prompt.handleAction('select');

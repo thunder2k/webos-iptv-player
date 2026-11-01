@@ -8,6 +8,7 @@ interface TestCat { id: string; name: string }
 
 class TestCatalog extends CatalogView<TestCat, TestItem> {
   protected get kicker() { return 'Test'; }
+  protected scopeName(): string { return 'test'; }
   protected readonly resumeKind: ResumeKind = 'vod';
   protected get emptyMessage() { return ''; }
   protected get gridEmptyMessage() { return ''; }
@@ -109,6 +110,7 @@ describe('CatalogView lazy posters', () => {
 
     const hero = document.createElement('div');
     hero.className = 'catalog-hero';
+    hero.appendChild(document.createElement('div')).className = 'catalog-hero-title';
     hero.style.backgroundImage = "url('http://host/other.jpg')";
     (view as any).layers.browse.appendChild(hero);
 

@@ -408,7 +408,8 @@ const M3U_SCREENS: Screen[] = [
   },
   {
     // A past program only offers to resume when a checkpoint exists for it;
-    // prepareM3U seeds one. RIGHT enters the program column on program 0,
+    // prepareM3U seeds one. After the pointer entry the first RIGHT only
+    // shows the focus; the next enters the program column on program 0,
     // which is the past show, and ENTER activates it.
     name: 'catchup-resume',
     budget: 0,
@@ -417,6 +418,7 @@ const M3U_SCREENS: Screen[] = [
       await p.keyboard.press('Escape');
       await enterTab(p, 'epg');
       await expect(p.locator('#epg-programmes .epg-programme-item').first()).toBeVisible();
+      await p.keyboard.press('ArrowRight');
       await p.keyboard.press('ArrowRight');
       await p.keyboard.press('Enter');
       await expect(p.locator('.catchup-resume-prompt')).toBeVisible();
@@ -650,7 +652,7 @@ const XTREAM_SCREENS: Screen[] = [
     go: async (p) => {
       await p.locator('[data-menu-action="__menu_back__"]').click();
       await p.locator('[data-menu-action="__subs_open__"]').click();
-      await expect(p.locator('[data-menu-action="__subs_track__"][data-track-index="-3"]')).toBeVisible();
+      await expect(p.locator('[data-menu-action="__subs_search__"]')).toBeVisible();
     },
   },
   {
@@ -675,7 +677,7 @@ const XTREAM_SCREENS: Screen[] = [
       await p.keyboard.press('Escape');
       await p.mouse.move(1900, 540);
       await p.locator('[data-menu-action="__subs_open__"]').click();
-      await p.locator('[data-menu-action="__subs_track__"][data-track-index="-3"]').click();
+      await p.locator('[data-menu-action="__subs_search__"]').click();
       await expect(p.locator('#subtitle-search .subs-count').first()).toBeVisible();
     },
   },
@@ -696,6 +698,16 @@ const XTREAM_SCREENS: Screen[] = [
       await expect(p.locator('#view-movies .catalog-tile').first()).toBeVisible();
       await expect(p.locator('#view-movies .catalog-rail-title').first())
         .toHaveText('Continue Watching');
+    },
+  },
+  {
+    name: 'movies-continue-management',
+    budget: 0,
+    go: async p => {
+      await p.locator('#view-movies [data-collection-manage="continue"]').click();
+      await expect(p.locator('#view-movies .catalog-managing')).toBeVisible();
+      await p.locator('#view-movies .catalog-remove-mark').hover();
+      await expect(p.locator('#view-movies .catalog-remove-mark')).toHaveClass(/focused/);
     },
   },
   {
@@ -725,6 +737,26 @@ const XTREAM_SCREENS: Screen[] = [
       await leaveParentalLocked(p);
       await enterTab(p, 'movies');
       await expect(p.locator('#view-movies .catalog-tile .lock-badge.is-locked').first()).toBeVisible();
+    },
+  },
+  {
+    name: 'movies-sort-directions',
+    budget: 0,
+    go: async (p) => {
+      const row = p.locator('#view-movies .catalog-layer-browse .catalog-sort');
+      await row.locator('.dropdown-trigger').click();
+      await row.locator('[data-dropdown-value="name"]').click();
+      await row.locator('[data-sort-direction="desc"]').hover();
+      await expect(row.locator('[data-sort-direction="asc"]')).toHaveAttribute('aria-checked', 'true');
+    },
+  },
+  {
+    name: 'movies-sort-menu',
+    budget: 0,
+    go: async (p) => {
+      await p.locator('#view-movies .catalog-layer-browse .dropdown-trigger').click();
+      await p.mouse.move(1850, 1040);
+      await expect(p.locator('#view-movies .dropdown.open')).toBeVisible();
     },
   },
 ];

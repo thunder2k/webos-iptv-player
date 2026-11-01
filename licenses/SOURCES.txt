@@ -1,0 +1,41 @@
+License provenance
+==================
+
+Package licenses are copied from the installed npm packages at build time.
+The versions are recorded in the generated THIRD_PARTY_NOTICES.txt.
+Shaka's full LICENSE and third_party/cml-cmcd/{LICENSE,NOTICE} are copied
+verbatim, rather than reconstructing their embedded notices.
+
+The files maintained in this directory have the following sources:
+
+ass-compiler.txt
+  ass-compiler 0.1.15:
+  https://raw.githubusercontent.com/weizhenye/ass-compiler/242018274f8838e740081745d23f2c5e308175e9/LICENSE
+  assjs 0.1.10 embeds ass-compiler but does not publish its build lockfile.
+  The retained compiler code matches both 0.1.15 and 0.1.16. Its exact
+  embedded version is not established; both carry the same MIT copyright.
+  The license here was compared in full against the 0.1.15 source above.
+
+qrcode-generator.txt
+  https://raw.githubusercontent.com/kazuhikoarase/qrcode-generator/517b9e6c3882f3ad28e4f776bbf1e1495869dc4c/LICENSE
+  The npm 2.0.4 distribution provides the copyright and MIT identifier in
+  dist/qrcode.mjs, but omits a standalone license file.
+
+twemoji.txt
+  Twemoji v17.0.3:
+  https://raw.githubusercontent.com/jdecked/twemoji/b6b55fef1e8636b540a6d016a4729ca8cdf2e60b/LICENSE-GRAPHICS
+  Upstream SHA-256: 8ae9438818c26e4873b91d8c6ad620526c011e27e125677f13031eda903f007c
+  A trailing space in the license text has been removed.
+  Artwork attribution:
+  https://github.com/jdecked/twemoji/blob/b6b55fef1e8636b540a6d016a4729ca8cdf2e60b/README.md#attribution-requirements
+  The 17 redistributed SVGs match that revision, ignoring line endings.
+  Local name -> upstream SVG name:
+  all -> 1f5c2, church -> 26ea, clapper_board -> 1f3ac, cooking -> 1f373,
+  entertainment -> 1f3ad, gaming -> 1f3ae, musical_note -> 1f3b5,
+  newspaper -> 1f4f0, no_one_under_eighteen -> 1f51e, shopping -> 1f6d2,
+  soccer_ball -> 26bd, star -> 2b50, teddy_bear -> 1f9f8,
+  television -> 1f4fa, three_oclock -> 1f552, world_map -> 1f5fa,
+  pencil -> 270f.
+
+This inventory covers the production IPK, not local-only development tools or
+desktop preview playback libraries.

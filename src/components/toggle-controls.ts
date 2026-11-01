@@ -19,9 +19,10 @@ export function toggleGroup(
     </div>`;
 }
 
-export function sourceToggle(enabled: boolean): Safe {
+export function sourceToggle(enabled: boolean, dataKey?: string): Safe {
   return html`
     <button class="source-toggle ${enabled ? 'active' : ''}" data-focusable
+            ${dataKey === undefined ? '' : html`data-key="${dataKey}"`}
             data-enabled="${enabled ? 'true' : 'false'}"
             aria-pressed="${enabled ? 'true' : 'false'}">
       <span class="source-toggle-track" aria-hidden="true">

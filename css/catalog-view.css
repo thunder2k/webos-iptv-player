@@ -65,16 +65,19 @@
   overflow-y: auto;
   z-index: 2;
 }
-.catalog-rails-spacer { height: 58%; }
+.catalog-rails-spacer { height: 45%; }
 .catalog-rails-body {
-  min-height: 42%;
-  padding: 8px 80px 60px;
+  min-height: 55%;
+  padding: 8px 12px 60px 80px;
   background: linear-gradient(180deg, transparent 0, rgb(var(--catalog-hero-scrim-rgb) / 0.85) 90px, var(--bg-primary) 240px);
 }
 
 .catalog-rail { margin-bottom: 28px; }
 .catalog-rail-title { margin: 0 0 12px; font-size: 30px; font-weight: 600; color: var(--text-primary); }
 .catalog-rail-track { display: flex; gap: 20px; overflow-x: auto; padding: 12px 12px 20px; margin: 0 -12px; }
+.catalog-rails-body .catalog-rail-track { margin-left: -80px; padding-left: 80px; }
+/* The bar starts at the keyline the posters rest on, not the bleed edge. */
+.catalog-rails-body .catalog-rail-track::-webkit-scrollbar-track { margin-left: 80px; }
 .catalog-category-rail { height: 152px; display: block; overflow-anchor: none; }
 .catalog-category-rail-spacer { position: relative; height: 120px; }
 .catalog-category-rail-cell {
@@ -85,11 +88,39 @@
 }
 
 .catalog-grid-title { margin: 0 0 24px; font-size: 44px; font-weight: 700; color: var(--text-primary); }
+.catalog-grid-count { margin-left: 20px; font-size: 26px; font-weight: 400; color: var(--text-secondary); }
+.catalog-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.catalog-sort-label { font-size: 24px; color: var(--text-secondary); }
+.catalog-sort .dropdown { min-width: 240px; }
+.catalog-sort .dropdown-sizer { font-weight: 700; }
+.catalog-sort .dropdown-menu { max-height: none; }
+.catalog-sort .dropdown-trigger,
+.catalog-sort-direction { font-family: inherit; line-height: 1.4; }
+.catalog-sort .catalog-sort-direction { gap: 10px; min-width: 0; padding: 12px 16px; }
+.catalog-sort .catalog-sort-direction:not(.active) {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.catalog-sort .catalog-sort-direction.active { background: var(--catalog-sort-selected-bg); }
+.catalog-sort-direction-icon {
+  display: inline-flex;
+  width: calc(26px * var(--font-scale));
+  height: calc(26px * var(--font-scale));
+  flex: none;
+}
+.catalog-sort-direction-icon svg { width: 100%; height: 100%; }
 .catalog-grid-track { position: relative; width: 100%; }
 .catalog-grid-cell { position: absolute; width: 220px; height: 371px; }
 
 .catalog-tile { width: 220px; flex: 0 0 auto; cursor: pointer; }
 .catalog-poster-wrap {
+  position: relative;
   width: 220px; height: 330px;
   border-radius: 12px; overflow: hidden;
   background: var(--catalog-surface);
@@ -157,7 +188,7 @@
 .detail-plot { max-width: 1000px; font-size: 28px; line-height: 1.5; color: var(--text-primary); margin: 0 0 24px; }
 .detail-cast { max-width: 1000px; font-size: 24px; color: var(--text-secondary); margin-bottom: 8px; }
 .detail-label { color: var(--text-primary); font-weight: 600; margin-right: 8px; }
-.detail-actions { display: flex; flex-wrap: nowrap; gap: 12px; margin-top: 32px; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
 .detail-btn {
   display: inline-flex; align-items: center; gap: 10px;
   padding: 14px 20px; border-radius: 10px; border: 3px solid transparent;
@@ -166,6 +197,7 @@
   white-space: nowrap; cursor: pointer;
 }
 .detail-btn-primary { background: var(--accent, #3ea6ff); color: #fff; }
+.detail-btn-danger { color: var(--danger); }
 .detail-btn.focused { border-color: var(--text-primary); }
 .detail-btn-icon { display: inline-flex; width: 28px; height: 28px; flex: 0 0 auto; }
 .detail-btn-icon svg { width: 100%; height: 100%; }
@@ -224,3 +256,77 @@
   font-size: 24px; line-height: 1.4; color: var(--text-secondary);
   margin: 10px 0 0; max-height: 68px; overflow: hidden;
 }
+
+.catalog-rail-head { display: flex; align-items: center; gap: 24px; margin-bottom: 12px; }
+.catalog-rail-head .catalog-rail-title { margin: 0; }
+.catalog-collection-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.btn.catalog-collection-button {
+  min-height: 54px;
+  box-sizing: border-box;
+  gap: 12px;
+  font-weight: 500;
+}
+.catalog-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+.catalog-action-icon svg { width: 100%; height: 100%; }
+.btn.catalog-collection-manage,
+.btn.catalog-collection-clear {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.btn.catalog-collection-manage.focused,
+.btn.catalog-collection-clear.focused {
+  background: var(--bg-tertiary);
+  border-color: var(--focus-ring);
+  color: var(--text-primary);
+}
+.catalog-collection-manage .catalog-action-icon { color: var(--text-muted); }
+.catalog-collection-manage.focused .catalog-action-icon { color: var(--accent); }
+/* Align the label with the posters while retaining the button's hit padding. */
+.btn.catalog-collection-clear { margin-left: auto; margin-right: -26px; }
+.catalog-collection-clear .catalog-action-icon { color: var(--danger); }
+.catalog-grid.catalog-managing { height: calc(100% - 64px); }
+.edit-hints.catalog-manage-hints { left: 0; height: 64px; box-sizing: border-box; padding: 0 80px; }
+.catalog-progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 6px;
+  background: var(--bg-tertiary);
+}
+.catalog-progress-fill { height: 100%; background: var(--accent); }
+.catalog-remove-mark {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 6px;
+  box-sizing: border-box;
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: var(--radius);
+  color: var(--danger);
+}
+.catalog-managing .catalog-tile { cursor: default; }
+.catalog-remove-mark.focused { border-color: transparent !important; box-shadow: none; }
+.catalog-remove-mark.focused circle { fill: var(--danger); }
+.catalog-remove-mark.focused path { stroke: #fff; }
+.catalog-poster-wrap .lock-badge ~ .catalog-remove-mark { right: 58px; }
+.catalog-remove-mark svg { width: 100%; height: 100%; }

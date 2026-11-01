@@ -29,6 +29,7 @@
   --catalog-focus: #5b8cff;
   --catalog-focus-rgb: 91 140 255;
   --catalog-hero-scrim-rgb: 10 10 15;
+  --catalog-sort-selected-bg: #007e9e;
   --focus-ring: var(--accent);
   --radius: 8px;
   --transition: 0.2s ease;
@@ -137,7 +138,13 @@ html[data-animation="full"] .catalog-rails,
 html[data-animation="full"] .catalog-rail-track,
 html[data-animation="full"] .search-view,
 html[data-animation="full"] .search-virtual-scroll,
-html[data-animation="full"] .reminder-manager-view {
+html[data-animation="full"] .reminder-manager-view,
+html[data-animation="full"] .group-picker,
+html[data-animation="full"] .epg-date-list,
+html[data-animation="full"] .parental-options-pane,
+html[data-animation="full"] .sidebar-tabs,
+html[data-animation="full"] .menu-items,
+html[data-animation="full"] .subs-list {
   scroll-behavior: smooth;
 }
 
@@ -218,8 +225,8 @@ button:not(:disabled):not(.account-avatar):not(.toggle-option):not(.source-toggl
     color var(--transition);
 }
 
-button:not(:disabled):not(.account-avatar):not(.toggle-option):not(.source-toggle):not(.epg-reminder-entry):not(.parental-row):not(.live-category-row):not(.search-icon):hover,
-button:not(:disabled):not(.account-avatar):not(.toggle-option):not(.source-toggle):not(.epg-reminder-entry):not(.parental-row):not(.live-category-row):not(.search-icon).focused {
+button:not(:disabled):not(.account-avatar):not(.toggle-option):not(.source-toggle):not(.epg-reminder-entry):not(.parental-row):not(.live-category-row):not(.search-icon):not(.catalog-remove-mark):hover,
+button:not(:disabled):not(.account-avatar):not(.toggle-option):not(.source-toggle):not(.epg-reminder-entry):not(.parental-row):not(.live-category-row):not(.search-icon):not(.catalog-remove-mark).focused {
   transform: scale(1.03);
 }
 

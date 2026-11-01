@@ -36,7 +36,13 @@ import {
   type XtreamLiveCategory,
   type XtreamLiveStream,
 } from './xtream-client';
-import { getCachedPlaylist, playlistCacheToken, scheduleCachedPlaylist } from './idb-cache';
+import {
+  cacheRecordRef,
+  getCachedPlaylist,
+  playlistCacheToken,
+  scheduleCachedPlaylist,
+  type CacheRecordRef,
+} from './idb-cache';
 import { isSourceEnabled } from '../utils/playlist';
 import {
   filterLiveStreams,
@@ -134,6 +140,12 @@ function xtreamLivePlaylist(
   };
 }
 
+export interface ChannelCacheSource {
+  record: CacheRecordRef;
+  length: number;
+  selection: Uint32Array;
+}
+
 class PlaylistServiceImpl {
   /** Every parsed channel, hidden ones included. Edit mode reads this. */
   allChannels: Channel[] = [];
@@ -142,6 +154,8 @@ class PlaylistServiceImpl {
   // Customized channels before parental concealment; the EPG keeps covering
   // concealed channels so an unlock does not force a guide refetch.
   private unconcealedChannels: Channel[] = [];
+  // Each `channels` entry's index in `allChannels`.
+  private channelSourceIndices = new Uint32Array(0);
   groups: string[] = [];
   groupsRevision = 0;
   playlistTabs: PlaylistTab[] = [];
@@ -254,6 +268,7 @@ class PlaylistServiceImpl {
     this.allChannels = [];
     this.channels = [];
     this.unconcealedChannels = [];
+    this.channelSourceIndices = new Uint32Array(0);
     this.groups = [];
     this.groupsRevision++;
     this.playlistTabs = [];
@@ -774,12 +789,41 @@ class PlaylistServiceImpl {
    */
   applyCustomization(): void {
     const includeHidden = this.includeHidden || StorageService.getShowHiddenChannels();
-    this.unconcealedChannels = ChannelCustomizationService.applyTo(this.allChannels, includeHidden);
-    this.channels = ParentalControlService.concealing
-      ? this.unconcealedChannels.filter(channel =>
-        !ParentalControlService.isConcealed(liveParentalRequest(channel)))
-      : this.unconcealedChannels;
+    const sourceIndices = new Uint32Array(this.allChannels.length);
+    this.unconcealedChannels = ChannelCustomizationService.applyTo(
+      this.allChannels,
+      includeHidden,
+      sourceIndices,
+    );
+    if (ParentalControlService.concealing) {
+      const visible: Channel[] = [];
+      for (let i = 0; i < this.unconcealedChannels.length; i++) {
+        const channel = this.unconcealedChannels[i];
+        if (ParentalControlService.isConcealed(liveParentalRequest(channel))) continue;
+        // Compacts in place: the write index never passes the read index.
+        sourceIndices[visible.length] = sourceIndices[i];
+        visible.push(channel);
+      }
+      this.channels = visible;
+    } else {
+      this.channels = this.unconcealedChannels;
+    }
+    this.channelSourceIndices = sourceIndices.subarray(0, this.channels.length);
     this.buildDerivedIndexes();
+  }
+
+  /**
+   * The playlist-cache record `allChannels` came from, with each visible
+   * channel's index in it — or null when memory no longer matches a record.
+   */
+  getChannelCacheSource(): ChannelCacheSource | null {
+    const record = cacheRecordRef(this.allChannels);
+    if (!record || this.channelSourceIndices.length !== this.channels.length) return null;
+    return {
+      record,
+      length: this.allChannels.length,
+      selection: this.channelSourceIndices,
+    };
   }
 
   /**

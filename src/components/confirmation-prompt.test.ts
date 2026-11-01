@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Focus } from '../navigation/focus-scope';
 import { ConfirmationPrompt } from './confirmation-prompt';
+import { ReminderPrompt } from './reminder-prompt';
 
 let prompt: ConfirmationPrompt;
 let onConfirm: ReturnType<typeof vi.fn>;
@@ -8,7 +10,7 @@ let onCancel: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   document.body.innerHTML = '';
-  prompt = new ConfirmationPrompt();
+  prompt = new ConfirmationPrompt('prompt.test');
   onConfirm = vi.fn();
   onCancel = vi.fn();
   prompt.show({
@@ -20,6 +22,8 @@ beforeEach(() => {
     onCancel,
   });
 });
+
+afterEach(() => Focus.uninstall());
 
 describe('ConfirmationPrompt', () => {
   it('defaults focus to Cancel for destructive actions', () => {
@@ -49,7 +53,7 @@ describe('ConfirmationPrompt', () => {
 
   it('moves focus to the button under the pointer', () => {
     document.querySelector<HTMLElement>('[data-confirm-action="confirm"]')!
-      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      .dispatchEvent(new CustomEvent('nav:hover', { bubbles: true }));
 
     expect(document.querySelector('[data-confirm-action="confirm"]')!
       .classList.contains('focused')).toBe(true);
@@ -58,5 +62,53 @@ describe('ConfirmationPrompt', () => {
 
     prompt.handleAction('select');
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('owns the keys while shown and hands them back when closed', () => {
+    const base = Focus.register({ id: 'view.test', root: document.body });
+    Focus.setBase(() => base);
+    expect(Focus.owner()?.id).toBe('prompt.test');
+    expect(Focus.owner()?.modal).toBe(true);
+
+    Focus.owner()!.handle('left');
+    Focus.owner()!.handle('select');
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(Focus.owner()).toBe(base);
+    expect(document.querySelectorAll('.focused')).toHaveLength(0);
+  });
+
+  it('shows one ring, on Cancel, again after a reopen', () => {
+    prompt.handleAction('left');
+    prompt.handleAction('back');
+    prompt.show({ title: 'T', message: 'M', confirmLabel: 'Yes', cancelLabel: 'No', onConfirm, onCancel });
+    expect(Array.from(document.querySelectorAll('.focused')).map((el) => el.getAttribute('data-key')))
+      .toEqual(['cancel']);
+  });
+
+  it('stays hidden when another prompt holds its scope id', () => {
+    const other = new ConfirmationPrompt('prompt.test');
+    expect(() => other.show({ title: 'T', message: 'M', confirmLabel: 'Yes', cancelLabel: 'No',
+      onConfirm, onCancel })).toThrow(/already registered/);
+    expect(document.querySelectorAll('.confirmation-prompt:not(.hidden)')).toHaveLength(1);
+    expect(Focus.owner()?.id).toBe('prompt.test');
+    expect(prompt.visible).toBe(true);
+  });
+
+  it('paints above a prompt of its tier that was shown before it', () => {
+    prompt.hide();
+    const reminder = new ReminderPrompt();
+    reminder.show('Alpha', 'ch1', { onConfirm: vi.fn(), onCancel: vi.fn() });
+    reminder.hide();
+    const later = new ConfirmationPrompt('prompt.later');
+    later.show({ title: 'T', message: 'M', confirmLabel: 'Yes', cancelLabel: 'No', onConfirm, onCancel });
+    later.hide();
+
+    reminder.show('Bravo', 'ch2', { onConfirm: vi.fn(), onCancel: vi.fn() });
+    expect(Focus.owner()?.id).toBe('prompt.reminder');
+    expect(document.body.lastElementChild?.classList.contains('reminder-prompt')).toBe(true);
+
+    later.show({ title: 'T', message: 'M', confirmLabel: 'Yes', cancelLabel: 'No', onConfirm, onCancel });
+    expect(Focus.owner()?.id).toBe('prompt.later');
+    expect(document.body.lastElementChild?.classList.contains('confirmation-prompt')).toBe(true);
   });
 });

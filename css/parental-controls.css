@@ -358,8 +358,9 @@
   padding: 12px 54px;
 }
 
+/* Above every other prompt: the PIN keeps the keys over one that opens later. */
 .parental-pin-prompt {
-  z-index: 1200;
+  z-index: 10001;
 }
 
 .parental-pin-dialog {

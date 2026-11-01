@@ -434,343 +434,84 @@ exit 23
     expect(records[0].headers).not.toHaveProperty('authorization');
   });
 
-  it('extracts stable diagnostic events with optional context fields', () => {
-    const timeline = extractDiagnosticTimeline([
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Player] event=playback.path.native session=3 load=2 reason=probe',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'warning',
-        text: '[EPG] event=epg.mapping.stale count=2 reason=missing_channel',
-      },
-      {
-        observedAt: '2026-01-01T00:00:02.000Z',
-        source: 'console',
-        level: 'error',
-        text: '[AppWorker] event=worker.lifecycle.failed'
-          + ' generation=2 active=1 reason=execution_error',
-      },
-      {
-        observedAt: '2026-01-01T00:00:03.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[M3ULoad] event=playlist.m3u.load.failed stage=decode_parse'
-          + ' reason=exception transport=stream filter=live_catalog'
-          + ' bytes=16777216 chunks=64 kept=8192 dropped=12000 elapsedMs=4500',
-      },
-      {
-        observedAt: '2026-01-01T00:00:04.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Player] ordinary log',
-      },
-    ]);
-    expect(timeline).toEqual([
-      expect.objectContaining({
-        code: 'playback.path.native',
-        session: 3,
-        load: 2,
-      }),
-      expect.objectContaining({
-        code: 'epg.mapping.stale',
-        session: null,
-        load: null,
-        count: 2,
-        reason: 'missing_channel',
-      }),
-      expect.objectContaining({
-        code: 'worker.lifecycle.failed',
-        generation: 2,
-        active: 1,
-        reason: 'execution_error',
-      }),
-      expect.objectContaining({
-        code: 'playlist.m3u.load.failed',
-        stage: 'decode_parse',
-        transport: 'stream',
-        filter: 'live_catalog',
-        bytes: 16777216,
-        chunks: 64,
-        kept: 8192,
-        dropped: 12000,
-        elapsedMs: 4500,
-      }),
-    ]);
+  const log = (second, text, level = 'log') => ({
+    observedAt: `2026-01-01T00:00:0${String(second)}.000Z`,
+    source: 'console',
+    level,
+    text,
+  });
+  const summaryOf = (diagnostics, extra = {}) => formatDiagnosticSummary({
+    capturedAt: '2026-01-01T00:00:09.000Z',
+    app: {},
+    environment: {},
+    state: {},
+    playlists: [],
+    diagnostics,
+    input: [],
+    xtream: [],
+    logs: [],
+    network: [],
+    ...extra,
   });
 
-  it('extracts remote-control input events into their own timeline', () => {
+  it('splits events into diagnostic, input, and Xtream timelines by namespace', () => {
     const logs = [
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Key] Key down event=key.down code=52 action=number target=app',
-      },
-      {
-        observedAt: '2026-01-01T00:00:00.500Z',
-        source: 'console',
-        level: 'log',
-        text: '[Key] Number entry event=key.number number=42 handler=set',
-      },
-      {
-        observedAt: '2026-01-01T00:00:00.600Z',
-        source: 'console',
-        level: 'log',
-        text: '[App] Key routed event=key.action action=number'
-          + ' view=player consumer=view_player number=42',
-      },
-      {
-        observedAt: '2026-01-01T00:00:00.700Z',
-        source: 'console',
-        level: 'log',
-        text: '[Key] Key down event=key.down code=999 action=unmapped target=app',
-      },
-      {
-        observedAt: '2026-01-01T00:00:00.800Z',
-        source: 'console',
-        level: 'log',
-        text: '[Key] Key ignored event=key.ignored reason=text_input',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Player] event=playback.path.native session=1 load=1',
-      },
+      log(0, '[Player] event=playback.path.native session=3 load=2'),
+      log(1, '[Key] Key down event=key.down code=52 action=number target=app'),
+      log(2, '[Xtream] Xtream request failed event=xtream.request.failed'
+        + ' endpoint=e1 code=timeout', 'warning'),
+      log(3, '[Player] ordinary log'),
     ];
 
-    expect(extractInputTimeline(logs)).toEqual([
-      expect.objectContaining({ event: 'key.down', code: 52, action: 'number' }),
-      expect.objectContaining({ event: 'key.number', number: 42 }),
-      expect.objectContaining({
-        event: 'key.action',
-        action: 'number',
-        view: 'player',
-        consumer: 'view_player',
-        number: 42,
-      }),
-      expect.objectContaining({
-        event: 'key.down', code: 999, action: 'unmapped', target: 'app',
-      }),
-      expect.objectContaining({ event: 'key.ignored', reason: 'text_input', code: null }),
-    ]);
-
-    // Input stays out of the playback timeline: a press per line would bury it.
     expect(extractDiagnosticTimeline(logs)).toEqual([
-      expect.objectContaining({ code: 'playback.path.native' }),
+      { observedAt: logs[0].observedAt, code: 'playback.path.native', level: 'log', text: logs[0].text },
+      { observedAt: logs[2].observedAt, code: 'xtream.request.failed', level: 'warning', text: logs[2].text },
     ]);
-  });
-
-  it('extracts structured Xtream request failures from natural-language logs', () => {
-    const timeline = extractXtreamTimeline([
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'warning',
-        text: '[Xtream] Xtream request failed event=xtream.request.failed'
-          + ' endpoint=get_vod_streams operation=browse resource=vod_streams'
-          + ' reason=request_failed code=too_large items=12'
-          + ' timeoutMs=30000 limitBytes=33554432',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Playlist] event=xtream.live_catalog.completed'
-          + ' load=2 available=1 items=32000 elapsedMs=4100',
-      },
-      {
-        observedAt: '2026-01-01T00:00:02.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Xtream] ordinary log',
-      },
+    expect(extractInputTimeline(logs)).toEqual([
+      { observedAt: logs[1].observedAt, event: 'key.down', level: 'log', text: logs[1].text },
     ]);
-    expect(timeline).toEqual([expect.objectContaining({
-      event: 'xtream.request.failed',
-      endpoint: 'get_vod_streams',
-      operation: 'browse',
-      resource: 'vod_streams',
-      reason: 'request_failed',
-      code: 'too_large',
-      items: 12,
-      timeoutMs: 30000,
-      limitBytes: 33554432,
-    }), expect.objectContaining({
-      event: 'xtream.live_catalog.completed',
-      load: 2,
-      available: 1,
-      items: 32000,
-      elapsedMs: 4100,
-    })]);
-  });
-
-  it('keeps Live category filter fields in both timelines and the summary', () => {
-    const logs = [
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Playlist] Xtream Live category filter applied'
-          + ' event=xtream.category_filter.applied load=2 mode=include'
-          + ' categories=3 kept=120 total=4000',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[Settings] Live categories chosen event=xtream.category_filter.picked'
-          + ' mode=exclude categories=2 total=40',
-      },
-      {
-        observedAt: '2026-01-01T00:00:02.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[App] Xtream Live categories announced'
-          + ' event=xtream.category_filter.announced count=5 items=2',
-      },
-    ];
     expect(extractXtreamTimeline(logs)).toEqual([
-      expect.objectContaining({
-        event: 'xtream.category_filter.applied',
-        load: 2, mode: 'include', categories: 3, kept: 120, total: 4000,
-      }),
-      expect.objectContaining({
-        event: 'xtream.category_filter.picked', mode: 'exclude', categories: 2, total: 40,
-      }),
-      expect.objectContaining({
-        event: 'xtream.category_filter.announced', count: 5, items: 2,
-      }),
+      { observedAt: logs[2].observedAt, event: 'xtream.request.failed', level: 'warning', text: logs[2].text },
     ]);
-    const report = assembleDiagnosticReport({
-      capturedAt: '2026-01-01T00:00:03.000Z',
-      full: false,
-      app: {},
-      logs,
-      networkEvents: [],
-    });
-    const summary = formatDiagnosticSummary(report);
-    expect(summary).toContain(
-      'xtream.category_filter.applied load=2 kept=120 mode=include categories=3 total=4000',
-    );
-    expect(summary).toContain(
-      'xtream.category_filter.applied load=2 mode=include categories=3 kept=120 total=4000',
-    );
-    expect(summary).toContain('xtream.category_filter.picked mode=exclude categories=2 total=40');
-    expect(summary).toContain('xtream.category_filter.announced count=5 items=2');
   });
 
-  it('formats parser, worker, catalog, and cache lifecycle fields', () => {
-    const diagnostics = extractDiagnosticTimeline([
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[AppWorker] event=worker.task.completed task=xmltv.load'
-          + ' generation=3 batches=257 progress=8 elapsedMs=9000',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[CacheStorage] event=playlist.cache.write.started'
-          + ' channels=38000 epg=2 delayMs=1300',
-      },
-    ]);
-    const summary = formatDiagnosticSummary({
-      capturedAt: '2026-01-01T00:00:02.000Z',
-      app: {},
-      environment: {},
-      state: {},
-      playlists: [],
-      diagnostics,
-      input: [],
-      xtream: [],
-      logs: [],
-      network: [],
+  it('summarizes every field after the event name, including unregistered ones', () => {
+    const logs = [
+      log(0, '[Player] Playback rate change failed event=playback.rate.failed'
+        + ' session=2 rate=1.5 errorCode=-7 errorText="e1" newField=v1', 'warning'),
+      log(1, '[App] Key routed event=key.action action=number view=player number=42'),
+      log(2, '[Playlist] event=xtream.category_filter.applied load=2 mode=include'),
+    ];
+    const summary = summaryOf(extractDiagnosticTimeline(logs), {
+      input: extractInputTimeline(logs),
+      xtream: extractXtreamTimeline(logs),
     });
 
     expect(summary).toContain(
-      'worker.task.completed generation=3 task=xmltv.load'
-        + ' batches=257 progress=8 elapsedMs=9000',
+      '- playback.rate.failed session=2 rate=1.5 errorCode=-7 errorText="e1" newField=v1',
     );
-    expect(summary).toContain(
-      'playlist.cache.write.started channels=38000 epg=2 delayMs=1300',
-    );
+    expect(summary).toContain('Input events: 1\n- key.action action=number view=player number=42');
+    expect(summary).toContain('Xtream events: 1\n- xtream.category_filter.applied load=2 mode=include');
   });
 
-  it('parses and formats playback speed fields', () => {
-    const diagnostics = extractDiagnosticTimeline([
-      {
-        observedAt: '2026-01-01T00:00:00.000Z',
-        source: 'console',
-        level: 'warning',
-        text: '[Player] Playback rate change failed event=playback.rate.failed'
-          + ' session=2 load=3 engine=native rate=1.5 stage=luna attempt=1'
-          + ' errorCode=-7 errorText="e1"',
-      },
-      {
-        observedAt: '2026-01-01T00:00:01.000Z',
-        source: 'console',
-        level: 'warning',
-        text: '[Player] Playback rate ignored by the pipeline event=playback.rate.ignored'
-          + ' session=2 load=3 engine=native rate=2 observed=1.01',
-      },
-    ]);
-    expect(diagnostics[0]).toMatchObject({
-      code: 'playback.rate.failed', engine: 'native', rate: 1.5, stage: 'luna',
-      attempt: 1, errorCode: -7, observed: null,
-    });
-    expect(diagnostics[1]).toMatchObject({ rate: 2, observed: 1.01, errorCode: null });
+  it('truncates long event fields in the summary', () => {
+    const summary = summaryOf(extractDiagnosticTimeline([
+      log(0, `[Player] event=playback.error errorText="${'x'.repeat(400)}"`),
+    ]));
+    const line = summary.split('\n').find((entry) => entry.startsWith('- playback.error'));
 
-    const summary = formatDiagnosticSummary({
-      capturedAt: '2026-01-01T00:00:02.000Z',
-      app: {},
-      environment: {},
-      state: {
-        media: {
-          paused: false, readyState: 4, networkState: 2, currentTime: 9, playbackRate: 1.5,
-        },
-      },
-      playlists: [],
-      diagnostics,
-      input: [],
-      xtream: [],
-      logs: [],
-      network: [],
-    });
-    expect(summary).toContain(
-      'playback.rate.failed session=2 load=3 stage=luna attempt=1'
-        + ' engine=native rate=1.5 errorCode=-7',
-    );
-    expect(summary).toContain('playback.rate.ignored session=2 load=3'
-      + ' engine=native rate=2 observed=1.01');
-    expect(summary).toContain('Media: playing | ready=4 network=2 time=9s rate=1.5');
+    expect(line).toMatch(/\.\.\.$/);
+    expect(line.length).toBeLessThan(260);
   });
 
-  it('ignores diagnostic fields inside JSON-quoted error text', () => {
-    const errorText = JSON.stringify(
-      'e1 "quoted" \\ errorCode=401 observed=9 engine=html rate=0.5'
-        + ' stage=stale attempt=9 session=99 load=99',
-    );
-    const text = '[Player] event=playback.rate.failed'
-      + ` errorText=${errorText} session=2 load=3 stage=luna attempt=1 engine=native rate=2`;
-    const [event] = extractDiagnosticTimeline([{
-      observedAt: '2026-01-01T00:00:00.000Z',
-      source: 'console',
-      level: 'warning',
-      text,
-    }]);
+  it('reads the State line from the last load event, ignoring quoted text', () => {
+    const summary = summaryOf(extractDiagnosticTimeline([
+      log(0, '[Playlist] event=playlist.load.completed source=cache channels=5'),
+      log(1, '[Playlist] event=playlist.load.completed errorText="channels=99 source=s1"'
+        + ' source=network channels=7'),
+    ]));
 
-    expect(event).toMatchObject({
-      code: 'playback.rate.failed', session: 2, load: 3, stage: 'luna', attempt: 1,
-      engine: 'native', rate: 2, observed: null, errorCode: null, text,
-    });
+    expect(summary).toContain('channels=7 (network)');
   });
 
   it('does not treat an event inside quoted error text as a diagnostic event', () => {
@@ -829,35 +570,6 @@ exit 23
       }, {
         observedAt: '2026-01-01T00:00:01.000Z',
         source: 'console',
-        level: 'log',
-        text: 'Selected native playback event=playback.path.native session=1 load=1',
-      }, {
-        observedAt: '2026-01-01T00:00:02.000Z',
-        source: 'console',
-        level: 'warning',
-        text: 'Xtream request failed event=xtream.request.failed'
-          + ' endpoint=get_series code=timeout timeoutMs=30000 limitBytes=33554432',
-      }, {
-        observedAt: '2026-01-01T00:00:03.000Z',
-        source: 'console',
-        level: 'warning',
-        text: '[EPG] Saved mapping missing event=epg.mapping.stale'
-          + ' count=2 reason=missing_channel',
-      }, {
-        observedAt: '2026-01-01T00:00:04.000Z',
-        source: 'console',
-        level: 'error',
-        text: '[AppWorker] App worker failed event=worker.lifecycle.failed'
-          + ' generation=2 active=1 reason=execution_error',
-      }, {
-        observedAt: '2026-01-01T00:00:05.000Z',
-        source: 'console',
-        level: 'log',
-        text: '[App] Key routed event=key.action action=number'
-          + ' view=player consumer=view_player number=42',
-      }, {
-        observedAt: '2026-01-01T00:00:06.000Z',
-        source: 'console',
         level: 'warning',
         text: '[Playlist] Playlist load completed event=playlist.load.completed'
           + ' source=network channels=0 all=0 groups=0 epg=1 sources=1 failed=1',
@@ -865,34 +577,14 @@ exit 23
       networkEvents: [],
     });
     const serialized = JSON.stringify(report);
-    expect(report.schemaVersion).toBe(3);
-    expect(report.diagnostics).toHaveLength(5);
-    expect(report.input).toEqual([
-      expect.objectContaining({ event: 'key.action', view: 'player', number: 42 }),
-    ]);
-    expect(report).not.toHaveProperty('playback');
+    expect(report.schemaVersion).toBe(4);
     expect(serialized).not.toContain('user1');
     expect(serialized).not.toContain('pass1');
     expect(serialized).not.toContain('Alpha.m3u8');
     const summary = formatDiagnosticSummary(report);
     expect(summary).toContain('webview=200');
-    expect(summary).toContain('playback.path.native');
-    expect(summary).toContain('Diagnostic events: 5');
-    expect(summary).toContain('Input events: 1');
-    expect(summary).toContain(
-      'key.action number=42 action=number view=player consumer=view_player',
-    );
-    expect(summary).toContain('epg.mapping.stale count=2 reason=missing_channel');
-    expect(summary).toContain(
-      'worker.lifecycle.failed generation=2 active=1 reason=execution_error',
-    );
-    expect(summary).toContain(
-      'xtream.request.failed endpoint=get_series code=timeout'
-        + ' timeoutMs=30000 limitBytes=33554432',
-    );
     expect(summary).toContain('Media: playing');
     expect(summary).toContain('channels=0 (network) rendered=1');
-    expect(summary).toContain('playlist.load.completed channels=0 source=network failed=1');
     expect(summary).toContain(
       'Media source: type=video/x-matroska canPlayType="" — source skipped without an error event',
     );
@@ -935,20 +627,6 @@ exit 23
     expect(summary.length).toBeLessThan(500);
   });
 
-  it('formats legacy schema v1 playback events as diagnostics', () => {
-    const summary = formatDiagnosticSummary({
-      schemaVersion: 1,
-      capturedAt: '2026-01-01T00:00:00.000Z',
-      app: {},
-      environment: {},
-      state: {},
-      playlists: [],
-      playback: [{ code: 'playback.path.native', session: 1 }],
-    });
-
-    expect(summary).toContain('Diagnostic events: 1');
-    expect(summary).toContain('playback.path.native session=1');
-  });
 });
 
 describe('diagnostic capture recovery', () => {
@@ -1021,7 +699,7 @@ describe('diagnostic capture recovery', () => {
     expect(report.state).toMatchObject({ view: 'view-player', channelsRendered: 4 });
     expect(report.nativeMetrics).toMatchObject({ durationMs: 1000 });
     expect(report.input).toEqual([
-      expect.objectContaining({ event: 'key.down', code: 461, action: 'back' }),
+      expect.objectContaining({ event: 'key.down' }),
     ]);
     expect(formatDiagnosticSummary(report))
       .toContain('Capture: incomplete at capturing-final-state (CDP connection closed)');

@@ -3,9 +3,15 @@ import { html, raw } from '../utils/dom';
 import { morph } from '../utils/morph';
 import { CONFIG } from '../config';
 import { SEARCH_ICON, UNLOCK_ICON } from './icons';
-import { AccountSwitcher } from './account-switcher';
+import { AccountSwitcher, type AccountMenuCloseReason } from './account-switcher';
+
+// `outside` is narrowed to a click on focusable content, which takes input and
+// releases the bar's focus; `bar` is a click on the bar outside the avatar
+// slot, `blank` one on nothing focusable.
+export type TabBarAccountMenuCloseReason = AccountMenuCloseReason | 'bar' | 'blank';
 import { t } from '../i18n';
 import { createLogger } from '../utils/logger';
+import { Focus, Tier, type FocusScope } from '../navigation/focus-scope';
 
 // Cap for the expanded inline search box.
 export const SEARCH_INPUT_MAX_WIDTH = 600;
@@ -45,7 +51,8 @@ export function sectionForView(view: string): Section | null {
 
 interface TabBarHandlers {
   onSwitch: (section: Section) => void;
-  onEnter: (section: Section) => void;
+  // `pointer`: a click on the tab, which the pointer still rests on.
+  onEnter: (section: Section, via: 'key' | 'pointer') => void;
   // The search query changed (typed / cleared); the host shows the results view
   // over the current one only while the query is non-empty.
   onSearchQuery: (query: string) => void;
@@ -60,15 +67,17 @@ interface TabBarHandlers {
   // The avatar dropdown opened; overlays above the tab bar must give way.
   onAccountMenuOpen: () => void;
   // The avatar dropdown closed (picked, dismissed, or toggled).
-  onAccountMenuClose: () => void;
+  // `hit` is the element under a pointer click that closed it.
+  onAccountMenuClose: (reason: TabBarAccountMenuCloseReason, hit?: Element) => void;
   // End a parental unlock session before it times out.
   onLockNow: () => void;
 }
 
 // Persistent, docked top section bar (hidden on the full-screen player / EPG).
-// Content owns focus by default; D-pad Up moves focus onto the active tab,
-// Left/Right switch section live, Down/Select/Back drop focus back into the
-// content. The Search tab expands an inline input instead of switching.
+// Content owns focus by default; D-pad Up off a view's top edge pushes the
+// bar's `tabbar` scope onto the active tab, Left/Right switch section live,
+// Down/Select/Back pop it and hand the keys back into the content. The
+// Search tab expands an inline input instead of switching.
 export class TabBar {
   private el: HTMLElement | null = null;
   private handlers: TabBarHandlers;
@@ -86,9 +95,21 @@ export class TabBar {
   private accounts: PlaylistEntry[] = [];
   private selectedAccountId = '';
   private lockShown = false;
+  private readonly scope: FocusScope;
 
   constructor(handlers: TabBarHandlers) {
     this.handlers = handlers;
+    this.scope = Focus.register({
+      id: 'tabbar',
+      root: () => this.el,
+      restrict: 'self-first',
+      tier: Tier.bar,
+      when: () => this._shown,
+      defaultKey: () => this.focusKey(),
+      enterTo: 'default',
+      onEnter: () => this.focus(),
+      onAction: (action) => this.handleAction(action),
+    });
   }
 
   get focused(): boolean { return this._focused; }
@@ -110,6 +131,19 @@ export class TabBar {
   private onAccount(): boolean {
     return this.accountShown
       && this.focusIndex === this.sections.length + (this.lockShown ? 1 : 0);
+  }
+  private focusKey(): string {
+    if (this.onLock()) return 'lock-now';
+    if (this.onAccount()) return 'account-avatar';
+    return this.sections[this.focusIndex]?.id ?? this.active;
+  }
+
+  // The bar owns the keys exactly while its scope is on the stack.
+  private setFocused(focused: boolean): void {
+    if (focused === this._focused) return;
+    this._focused = focused;
+    if (focused) Focus.push(this.scope);
+    else Focus.pop(this.scope);
   }
 
   // Shown while a parental PIN entry keeps locked content open.
@@ -144,7 +178,7 @@ export class TabBar {
   setShown(v: boolean): void {
     this._shown = v;
     if (!v) {
-      this._focused = false;
+      this.setFocused(false);
       // Search first: closing the menu must not reopen recent searches.
       if (this.searchExpanded) this.dropSearch('hidden');
       this.switcher?.closeMenu();
@@ -202,7 +236,7 @@ export class TabBar {
   // Move input focus onto the bar (D-pad Up from a view's top row).
   focus(): void {
     if (!this._shown) return;
-    this._focused = true;
+    this.setFocused(true);
     this.focusIndex = Math.max(0, this.sections.findIndex((s) => s.id === this.active));
     this.render();
     if (this.active === 'search' && this.searchExpanded) {
@@ -211,7 +245,7 @@ export class TabBar {
   }
 
   private dropFocus(): void {
-    this._focused = false;
+    this.setFocused(false);
     this.render();
   }
 
@@ -247,16 +281,65 @@ export class TabBar {
       this.active = section;
       this.focusIndex = Math.max(0, this.sections.findIndex((s) => s.id === section));
       this.dropFocus();
-      this.handlers.onEnter(section);
+      this.handlers.onEnter(section, 'pointer');
     });
+    // The pointer on the scope below or on the shown view hands the keys
+    // below; left with the bar, the next key would switch section from under
+    // it. The open search box keeps them, so typing is not cut off, and so
+    // does anything above the bar. KeyHandler sends no hover for content
+    // moving under a resting pointer.
+    document.addEventListener('nav:hover', (e: Event) => {
+      if (this.hoverReleasesTo(e)) this.releaseOnHover();
+    });
+    // Edge scrolling a rail below works the content as a hover would, even
+    // from a gutter that has nothing to hover.
+    document.addEventListener('nav:edge-scroll', (e: Event) => {
+      if (this.hoverReleasesTo(e)) this.releaseOnHover();
+    });
+    // A self-only scope below, such as the Guide's open group menu, still
+    // takes the keys, but a hover outside it stays out of the content, as
+    // that scope's own hover gate would keep it. The capture phase runs
+    // this before the content's listeners (and, registered first,
+    // FocusRing's hover mark). The open account menu keeps the keys over
+    // that scope too, and is not modal itself, so it keeps the same gate.
+    document.addEventListener('nav:hover', (e: Event) => {
+      if (this.blocksHoverUnderMenu(e)) {
+        e.stopImmediatePropagation();
+        return;
+      }
+      const under = this.hoverReleasesTo(e);
+      if (!under?.modal || under.root()?.contains(e.target as Node)) return;
+      e.stopImmediatePropagation();
+      this.releaseOnHover();
+    }, true);
+  }
+
+  // The scope a hover on `e.target` hands the bar's keys to, if any.
+  private hoverReleasesTo(e: Event): FocusScope | null {
+    if (!this._focused || this.searchExpanded || Focus.owner() !== this.scope) return null;
+    const target = e.target;
+    if (!(target instanceof Node) || this.el?.contains(target)) return null;
+    const under = Focus.ownerWithout(this.scope);
+    if (!under?.root()?.contains(target) && !Focus.base()?.root()?.contains(target)) return null;
+    return under;
+  }
+
+  private blocksHoverUnderMenu(e: Event): boolean {
+    const menu = this.switcher?.menuScope;
+    if (!menu || Focus.owner() !== menu) return false;
+    const target = e.target;
+    if (!(target instanceof Node) || this.el?.contains(target)) return false;
+    const under = Focus.ownerWithout(menu, this.scope);
+    return !!under?.modal && !under.root()?.contains(target);
+  }
+
+  private releaseOnHover(): void {
+    log.debug('Tab bar released', 'event=tab_bar.blur', 'reason=hover');
+    this.blur();
   }
 
   handleAction(action: Action): void {
     if (!this._focused) return;
-    if (this.switcher?.menuOpen) {
-      this.switcher.handleAction(action);
-      return;
-    }
     if (this.searchExpanded) {
       // Reached only when the input lost DOM focus (e.g. to a pointer click),
       // since the global handler leaves keys typed into it alone.
@@ -280,28 +363,29 @@ export class TabBar {
           if (action === 'select') {
             this.handlers.onLockNow();
           } else {
-            this.dropFocus();
-            this.handlers.onEnter(this.active);
+            this.enterActive();
           }
         } else if (this.onAccount()) {
-          this.switcher?.openMenu();
-          this.render();
+          this.switcher?.openMenu('key');
         } else if (this.sections[this.focusIndex].id === 'search') {
           this.expandSearch('key');
         } else {
-          this.dropFocus();
-          this.handlers.onEnter(this.active);
+          this.enterActive();
         }
         break;
       case 'back':
-        this.dropFocus();
-        this.handlers.onEnter(this.active);
+        this.enterActive();
         break;
       case 'up':
         break; // topmost — stay on the bar
       default:
         break;
     }
+  }
+
+  private enterActive(): void {
+    this.dropFocus();
+    this.handlers.onEnter(this.active, 'key');
   }
 
   // Moving onto a section switches it live; moving onto the avatar or the
@@ -312,6 +396,11 @@ export class TabBar {
   }
 
   private commitSwitch(): void {
+    // Back onto the shown section from the avatar or the lock: nothing to switch.
+    if (this.sections[this.focusIndex].id === this.active) {
+      this.render();
+      return;
+    }
     this.active = this.sections[this.focusIndex].id;
     this.render();
     this.handlers.onSwitch(this.active);
@@ -325,7 +414,7 @@ export class TabBar {
     this.active = 'search';
     this.focusIndex = this.sections.findIndex((s) => s.id === 'search');
     this.searchExpanded = true;
-    this._focused = true;
+    this.setFocused(true);
     this.render();
     const input = this.el?.querySelector<HTMLInputElement>('.tab-bar-search-input');
     if (input) {
@@ -334,7 +423,7 @@ export class TabBar {
     }
     this.expandStartedAt = Date.now();
     // After sizing the box, so the host can hang recent searches from it.
-    this.handlers.onEnter('search'); // host remembers the current view + preps results
+    this.handlers.onEnter('search', mode); // host remembers the current view + preps results
     input?.focus();
   }
 
@@ -381,7 +470,8 @@ export class TabBar {
     this.searchExpanded = false;
     const input = this.el?.querySelector<HTMLInputElement>('.tab-bar-search-input');
     if (input) { input.value = ''; input.style.width = ''; input.blur(); }
-    this._focused = true;
+    // The bar keeps the keys over the restored view, which Down resumes.
+    this.setFocused(true);
     this.render();
     this.handlers.onSearchClose();
   }
@@ -415,35 +505,35 @@ export class TabBar {
 
   private render(): void {
     if (!this.el) return;
-    const searchIdx = this.sections.findIndex((s) => s.id === 'search');
-    const iconFocused = this._focused && this.focusIndex === searchIdx && !this.searchExpanded;
     morph(this.el, html`
       <div class="tab-bar-inner" data-nav-container>
         <span class="tab-bar-title">${CONFIG.APP_NAME}</span>
         ${this.sections.filter((s) => s.id !== 'search').map((s) => {
-          const i = this.sections.findIndex((x) => x.id === s.id);
-          const focusedCls = this._focused && i === this.focusIndex ? 'focused' : '';
           const activeCls = s.id === this.active ? 'active' : '';
           return html`
-          <button class="tab-bar-item ${focusedCls} ${activeCls}"
+          <button class="tab-bar-item ${activeCls}"
                   data-key="${s.id}" data-section="${s.id}" aria-label="${t(s.labelKey)}">${t(s.labelKey)}</button>
         `;
         })}
         <div class="tab-bar-search ${this.searchExpanded ? 'expanded' : ''}" data-key="search-slot" data-morph-preserve></div>
         ${this.lockShown ? html`
-          <button class="tab-bar-item tab-bar-lock ${this._focused && this.onLock() ? 'focused' : ''}"
+          <button class="tab-bar-item tab-bar-lock"
                   data-key="lock-now" data-lock-now>${raw(UNLOCK_ICON)}<span>${t('parental.lockNow')}</span></button>
         ` : ''}
         <div class="tab-bar-account" data-key="account-slot" data-morph-preserve></div>
       </div>
     `);
-    this.mountSearch(iconFocused);
+    this.mountSearch();
     this.mountAccount();
+    if (!this._focused) return;
+    this.scope.focus(this.focusKey(), 'key');
+    // The box's caret marks where the keys go.
+    if (this.searchExpanded) this.scope.conceal();
   }
 
   // The search slot's children are owned here (preserved from morph): build the
   // input + magnifier once, then keep the placeholder and icon state in sync.
-  private mountSearch(iconFocused: boolean): void {
+  private mountSearch(): void {
     const wrap = this.el?.querySelector<HTMLElement>('.tab-bar-search');
     if (!wrap) return;
     if (!wrap.querySelector('.search-icon')) {
@@ -464,14 +554,13 @@ export class TabBar {
     const input = wrap.querySelector<HTMLInputElement>('.tab-bar-search-input')!;
     input.placeholder = this.searchPlaceholder();
     const btn = wrap.querySelector<HTMLElement>('.search-icon')!;
-    btn.classList.toggle('focused', iconFocused);
     btn.classList.toggle('active', this.active === 'search');
   }
 
   // Release DOM focus so d-pad/OK reach what is below; stay in the box when
   // nothing there can take focus.
   private leaveSearchInput(): void {
-    this._focused = false;
+    this.setFocused(false);
     this.el?.querySelector<HTMLInputElement>('.tab-bar-search-input')?.blur();
     if (!this.handlers.onSearchLeave()) this.focus();
   }
@@ -494,19 +583,42 @@ export class TabBar {
   }
 
   // The account slot's DOM is owned by the AccountSwitcher (preserved across
-  // morph). Create it once, then keep its accounts + focus state in sync.
+  // morph). Create it once, then keep its accounts in sync. The open menu is
+  // a scope above the bar that keeps the keys but not the hover below it;
+  // closing it hands the keys back below.
   private mountAccount(): void {
     const slot = this.el?.querySelector<HTMLElement>('.tab-bar-account');
     if (!slot) return;
     if (!this.switcher) {
       this.switcher = new AccountSwitcher(slot, {
         onSelect: (id) => this.handlers.onSelectAccount(id),
-        onMenuOpen: () => this.handlers.onAccountMenuOpen(),
-        onMenuClose: () => this.handlers.onAccountMenuClose(),
-      });
+        onMenuOpen: (mode) => {
+          log.debug('Account menu opened', 'event=account.menu.opened', `mode=${mode}`);
+          // A pointer click opens the menu without routing through the bar:
+          // its keys come back to the avatar when the menu closes.
+          if (!this._focused || !this.onAccount()) {
+            this.el?.querySelector<HTMLInputElement>('.tab-bar-search-input')?.blur();
+            this.focusIndex = this.sections.length + (this.lockShown ? 1 : 0);
+            this.setFocused(true);
+            this.render();
+          }
+          this.handlers.onAccountMenuOpen();
+        },
+        onMenuClose: (reason, hit) => {
+          // A click on focusable content moves the user there, so the bar lets
+          // the keys go with it; any other click leaves them on the avatar.
+          let effective: TabBarAccountMenuCloseReason = reason;
+          if (reason === 'outside') {
+            if (hit && this.el?.contains(hit)) effective = 'bar';
+            else if (!hit || !hit.closest('[data-focusable]')) effective = 'blank';
+          }
+          log.debug('Account menu closed', 'event=account.menu.closed', `reason=${effective}`);
+          if (effective === 'outside' && this._focused) this.dropFocus();
+          this.handlers.onAccountMenuClose(effective, hit);
+        },
+      }, 'tabbar.accounts');
       this.switcher.init();
     }
     this.switcher.setAccounts(this.accounts, this.selectedAccountId);
-    this.switcher.setFocused(this._focused && this.onAccount());
   }
 }

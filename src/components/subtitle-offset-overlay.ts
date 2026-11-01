@@ -1,6 +1,7 @@
 import type { Action } from '../types';
-import { html, show, hide } from '../utils/dom';
+import { html, show, hide, inShownView } from '../utils/dom';
 import { morph } from '../utils/morph';
+import { Focus, type FocusScope } from '../navigation/focus-scope';
 import { CONFIG } from '../config';
 import { clampSubtitleOffset, formatSubtitleOffset } from '../utils/subtitle-tracks';
 import { t } from '../i18n';
@@ -18,6 +19,8 @@ export class SubtitleOffsetOverlay {
   private onClose: () => void;
   private seconds = 0;
   private isVisible = false;
+  // Registered on the first open: a modal over the player and its menus.
+  private scope: FocusScope | null = null;
 
   constructor(container: HTMLElement, onChange: (seconds: number) => void, onClose: () => void = () => { /* no-op */ }) {
     this.el = container;
@@ -37,11 +40,23 @@ export class SubtitleOffsetOverlay {
     this.isVisible = true;
     this.render();
     show(this.el);
+    if (!this.scope) {
+      const el = this.el;
+      this.scope = Focus.register({
+        id: 'player.subtitle_offset',
+        root: el,
+        restrict: 'self-only',
+        when: () => inShownView(el),
+        onAction: (action) => this.handleAction(action),
+      });
+    }
+    Focus.push(this.scope);
   }
 
   close(): void {
     if (!this.isVisible) return;
     this.isVisible = false;
+    if (this.scope) Focus.pop(this.scope);
     hide(this.el);
     this.onClose();
   }

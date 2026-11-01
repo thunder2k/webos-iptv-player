@@ -2,6 +2,7 @@
   <img src="assets/icon.svg" alt="webOS IPTV Player icon">
   <h1>webOS IPTV Player</h1>
   <p>An IPTV player for LG webOS TVs. Supports M3U playlists, Xtream Codes accounts, XMLTV program guides, and catch-up/timeshift playback.</p>
+  <p><strong>More webOS tools:</strong> <a href="https://github.com/lennylxx/lg-devmode-forever">DevMode Forever</a> · <a href="https://github.com/lennylxx/lg-geolock-bypass">GeoLock Bypass</a> · <a href="https://github.com/lennylxx/lg-ipk-download">IPK Download</a></p>
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
   <p>
   <a href="#supported-webos-versions"><img src="https://img.shields.io/badge/webOS-4%2B-e6007e?logo=webos&logoColor=white" alt="webOS 4+"></a>
@@ -23,23 +24,23 @@
 
 | Catch-up resume | Channel info |
 | --- | --- |
-| ![Catch-up resume](https://github.com/user-attachments/assets/9a49fa89-b3ae-4b27-bcd6-b93de2c3e1e1) | ![Channel info](https://github.com/user-attachments/assets/9adf8302-750f-429b-9155-828c8c30f097) |
+| ![Catch-up resume](https://github.com/user-attachments/assets/641a72bf-db7e-4757-ac71-c8add5114c7a) | ![Channel info](https://github.com/user-attachments/assets/9adf8302-750f-429b-9155-828c8c30f097) |
 
 | Playback overlays | Subtitles |
 | --- | --- |
-| ![Playback overlays](https://github.com/user-attachments/assets/6a75885d-6464-4ae8-a4f8-35774ab20838) | ![Subtitles](https://github.com/user-attachments/assets/5d1fab57-1087-414b-9a20-f900589eac4a) |
+| ![Playback overlays](https://github.com/user-attachments/assets/08c81dd7-5811-4fe3-9ed0-3e766d7124f9) | ![Subtitles](https://github.com/user-attachments/assets/5d1fab57-1087-414b-9a20-f900589eac4a) |
 
 | Subtitle search | Movies |
 | --- | --- |
-| ![Subtitle search](https://github.com/user-attachments/assets/4ef9c97e-131b-4e4f-bf9a-c753d66f2956) | ![Movies](https://github.com/user-attachments/assets/a6b09baf-0342-4e02-9d7e-5cf7677d1ecf) |
+| ![Subtitle search](https://github.com/user-attachments/assets/4ef9c97e-131b-4e4f-bf9a-c753d66f2956) | ![Movies](https://github.com/user-attachments/assets/6d4d65c4-9719-4a2f-93a0-2fff4f8c0b2d) |
 
 | Movie detail | Series detail |
 | --- | --- |
-| ![Movie detail](https://github.com/user-attachments/assets/1380b0b2-680f-49bb-a470-336c9e14a54a) | ![Series detail](https://github.com/user-attachments/assets/2962184e-cc95-455d-aea7-888ff3297dc4) |
+| ![Movie detail](https://github.com/user-attachments/assets/b1acbc3c-47f7-4cd2-9fe6-f3b3aca03768) | ![Series detail](https://github.com/user-attachments/assets/2962184e-cc95-455d-aea7-888ff3297dc4) |
 
 | Search | Settings |
 | --- | --- |
-| ![Search](https://github.com/user-attachments/assets/94bd8f82-1774-4a46-a607-206cf8321c4d) | ![Settings](https://github.com/user-attachments/assets/59b155ed-40b6-4ebd-b063-a1e8cbd4de33) |
+| ![Search](https://github.com/user-attachments/assets/0c6c54e2-6fb3-4fb2-a0da-7f6459815390) | ![Settings](https://github.com/user-attachments/assets/8d47b502-ddcf-447f-a6b1-5afbf1b6b9ba) |
 
 | Theme picker | Reminder manager |
 | --- | --- |
@@ -65,6 +66,8 @@
 - **Recently Watched** — return to recent live channels or resume partially watched catch-up programs
 - **Live preview** — keep live playback beside the channel list while browsing, with program info and quick controls
 - **Movies & Series** — browse an Xtream account's VOD catalogs, with Continue Watching and account-scoped Watchlist rails
+- **Catalog sorting** — sort Movies and Series by name, date added, rating, or year in either direction; each section remembers its choice
+- **Continue Watching & Watchlist management** — remove individual titles, clear a whole list, or clear a movie's saved progress from its details page
 - **Automatic VOD queues** — continue through series episodes or remaining Watchlist movies, removing completed titles from the Watchlist
 - **Catch-up & Live DVR** — replay past programs, and pause / rewind / return to the live edge on live streams
 - **Parental controls** — lock Live TV groups, movie and series categories, or individual titles with a PIN, with adult groups suggested for locking; locked content can stay listed with a lock or be hidden, and you choose when the PIN is asked again
@@ -83,14 +86,16 @@
 
 **Navigation**
 
-- **Search** — across channels, EPG programs, movies, and series, with direct live, catch-up, and reminder actions; recent searches drop down under the search box for one-press repeat searches
+- **Search** — across channels, EPG programs, movies, and series, with direct live, catch-up, and reminder actions; recent searches drop down under the search box for one-press repeat searches; the search index is prebuilt in the background and cached, so Search is ready almost instantly
 - **Channel sidebar** — switch channels over the video with current-program info, organized by group
 - **Channel customization** — reorder, hide, rename, regroup, manage favorites, and correct per-channel EPG matching or timing
 - **Auto-play and genre group icons** for faster browsing
 - **Number-key channel entry** — press the remote's number keys to tune by channel number from the channel list or while watching, with on-screen digit feedback
 - **Full remote & Magic Remote** — spatial D-pad navigation and pointer control across every view
+- **Magic Remote edge scrolling** — rest the pointer near the edge of a catalog or search rail, tab row, or Guide date strip to scroll it, faster the longer it stays
 - **Color themes** — choose from light and dark app-wide themes with live previews, plus Dark or Frosted player overlays; selections persist across launches
 - **Adjustable text size** — scale text from 80%–150% without resizing controls
+- **Animation mode** — Essential turns off costly motion on older TVs, Reduced keeps visual effects but scrolls instantly, and Full smooth-scrolls single navigation steps
 - **Multilingual interface** — available in English, Deutsch, Español, Français, Italiano, Polski, Português (Brasil), Русский, Türkçe, Українська, and 简体中文; follows the TV language by default or can be selected explicitly in Settings
 
 **Development**
@@ -143,13 +148,13 @@ Install the community
 then open **Settings → Add repository** and enter:
 
 ```text
-https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json
+https://raw.githubusercontent.com/lennylxx/webos-homebrew/main/repository.json
 ```
 
 To prefill the repository URL from a computer configured with `ares-cli`, run:
 
 ```bash
-ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/thunder2k/webos-iptv-player/main/homebrew-repository.json"}'
+ares-launch --device tv org.webosbrew.hbchannel -p '{"launchMode":"addRepository","url":"https://raw.githubusercontent.com/lennylxx/webos-homebrew/main/repository.json"}'
 ```
 
 Confirm **Add repository** on the TV. Homebrew Channel can then install the app
@@ -223,6 +228,11 @@ scripts/tv.sh perf --duration 30                 # Sample CPU, heap, DOM, and la
 scripts/tv.sh diag                               # Capture a redacted diagnostics report
 scripts/tv.sh capt screenshot screen.png         # Capture video and app OSD
 scripts/tv.sh capt record screen.mp4             # Record 10 seconds, target 5 fps, no audio
+scripts/tv.sh input key down ok red              # Press remote keys
+scripts/tv.sh input click 700 450                # Move the Magic Remote pointer and click
+scripts/tv.sh input wheel 3                      # Scroll the wheel 3 notches down at the pointer
+scripts/tv.sh input key power                    # Turn the TV off
+scripts/tv.sh input wake                         # Turn the TV on (Wake-on-LAN)
 scripts/tv.sh run 'uname -a'                     # Run a TV command over SSH
 scripts/tv.sh push ./file.txt /tmp/file.txt      # Copy a local file to the TV
 scripts/tv.sh pull /tmp/file.txt ./file.txt      # Copy a TV file to this computer
@@ -231,8 +241,8 @@ scripts/tv.sh reboot                             # Reboot the TV through Luna
 TV_DEVICE=tv2 scripts/tv.sh logs                 # Select a non-default configured TV
 ```
 
-Run `scripts/tv.sh capt --help`, `scripts/tv.sh perf --help`, or
-`scripts/tv.sh diag --help` for options.
+Run `scripts/tv.sh logs --help` (or `eval`, `perf`, `diag`, `capt`,
+`input`) for options.
 
 ### Preview in Browser
 
@@ -272,9 +282,9 @@ Open with the **Blue** key or the **Settings** tab in the top bar. Sections:
 |-----|--------|-------------|-----|
 | Up/Down | Channel +/- | Navigate | Navigate within pane |
 | Left | Open sidebar, then groups; seek −30s when available | Move toward groups | Previous pane or day |
-| Right | Open menu; seek +30s when available | Move toward channels | Next pane, day, or Reminder Manager |
+| Right | Open menu; seek +30s while the OSD shows on seekable playback (press OK to show it) | Move toward channels | Next pane, day, or Reminder Manager |
 | OK/Enter | Toggle OSD; pause/resume; activate overlay | Select channel | Play channel/program or open Reminder Manager |
-| Back | Back out of sidebar/menu; stop & return | Exit app (press twice) | Close guide |
+| Back | Back out of sidebar/menu, then hide a paused OSD; stop & return | Exit app (press twice) | Close guide |
 | Red | Open EPG | Open EPG | — |
 | Blue | Open settings | Open settings | Open settings |
 | Yellow | Show OSD | Edit channel list | Search guide |
@@ -300,3 +310,12 @@ some of the features above:
 - [`docs/storage-and-data.md`](docs/storage-and-data.md) — what the app stores, where it lives, and how user data is separated from disposable caches
 - [`docs/lan-service.md`](docs/lan-service.md) — phone setup and M3U uploads over the bundled LAN service
 - [`docs/unsupported-features.md`](docs/unsupported-features.md) — features that webOS does not allow or that are intentionally out of scope, with alternatives
+
+## License and third-party notices
+
+This project is licensed under [Apache-2.0](LICENSE). Third-party software and
+artwork retain their own licenses; see [the attribution inventory](THIRD_PARTY_NOTICES.txt).
+Every build includes `LICENSE`, `THIRD_PARTY_NOTICES.txt`, and a `licenses/`
+directory in `dist/`, so the notices accompany the packaged app. This inventory
+covers the production IPK, not the additional playback libraries used only for
+local desktop preview.
