@@ -117,7 +117,7 @@ describe('Movies browse + grid', () => {
       expect(container.querySelector('.catalog-layer-grid .focused')?.getAttribute('data-item-id')).toBe('11');
     });
 
-    it('filters browse to the selected category', async () => {
+    it('opens the category grid when selecting from the filter', async () => {
       catalogMock.loadVodCategories.mockResolvedValue([
         { id: '1', name: 'Action' },
         { id: '2', name: 'Comedy' },
@@ -136,19 +136,19 @@ describe('Movies browse + grid', () => {
       expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
       expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
 
-      // Select "Comedy": only the comedy rail remains.
+      // Select "Comedy": opens the comedy grid view instead of filtering browse.
       filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="2"]')!.click();
-      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
-      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+      expect(container.querySelector<HTMLElement>('.catalog-layer-grid')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-tile[data-item-id="20"]')?.textContent).toContain('Comedy Movie');
 
-      // Select "All Categories": every rail returns.
-      const again = container.querySelector<HTMLElement>('.catalog-category-filter')!;
-      again.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value=""]')!.click();
+      // Back returns to browse with all rails.
+      view.handleAction('back');
       expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
       expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
     });
 
-    it('filters browse to a category that is not a preloaded rail', async () => {
+    it('opens the grid for a category that is not a preloaded rail', async () => {
       catalogMock.loadVodCategories.mockResolvedValue([
         { id: '1', name: 'One' }, { id: '2', name: 'Two' }, { id: '3', name: 'Three' },
         { id: '4', name: 'Four' }, { id: '5', name: 'Five' }, { id: '6', name: 'Six' },
@@ -168,12 +168,9 @@ describe('Movies browse + grid', () => {
 
       const filter = container.querySelector<HTMLElement>('.catalog-category-filter')!;
       filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="7"]')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 
-      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
-      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:7"]')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-layer-grid')).not.toBeNull();
       expect(container.querySelector<HTMLElement>('.catalog-tile[data-item-id="70"]')?.textContent).toContain('Seven Movie');
     });
 

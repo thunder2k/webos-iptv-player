@@ -1322,32 +1322,17 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   }
 
   private async applyCategoryFilter(value: string): Promise<void> {
-    this.categoryFilter = value === '' ? null : value;
-    const categoryId = this.categoryFilter;
-    if (categoryId && !this.itemsByCategory[categoryId]) {
-      // The category isn't a preloaded rail: load its items so the filter can show them.
-      const signal = this.requestSignal;
-      if (signal && !signal.aborted && this.account) {
-        try {
-          const items = await this.loadVisibleItems(this.account, categoryId, signal);
-          if (!signal.aborted && this.categoryFilter === categoryId) {
-            this.setCategoryItems(categoryId, items);
-          }
-        } catch (err) {
-          if (!signal.aborted) {
-            log.error(
-              'Catalog category filter load failed',
-              'event=xtream.view.load.failed',
-              'operation=category-filter',
-              `mode=${this.parentalKind}`,
-              err,
-            );
-          }
-        }
-      }
+    if (value === '') {
+      // "All Categories": stay in browse, just clear any filter.
+      this.categoryFilter = null;
+      this.renderBrowse(false);
+      this.place(this.layer().querySelector<HTMLElement>('.catalog-category-filter .dropdown-trigger'), this.placementVia());
+      return;
     }
-    this.renderBrowse(false);
-    this.place(this.layer().querySelector<HTMLElement>('.catalog-category-filter .dropdown-trigger'), this.placementVia());
+    // A specific category opens its full grid ("show all") view instead of
+    // filtering the browse rails — same as tapping "See All" on a rail.
+    this.categoryFilter = null;
+    await this.openGrid(value);
   }
 
   private filteredBrowseGroups(): { category: C; items: I[] }[] {

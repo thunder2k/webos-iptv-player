@@ -90,7 +90,7 @@ describe('Series browse + grid', () => {
     expect(container.querySelector('.catalog-layer-browse .focused')?.getAttribute('data-key')).toBe('r:e4');
   });
 
-  it('filters browse to the selected category', async () => {
+  it('opens the category grid when selecting from the filter', async () => {
     catalogMock.loadSeriesCategories.mockResolvedValue([
       { id: '1', name: 'Action' },
       { id: '2', name: 'Comedy' },
@@ -109,14 +109,14 @@ describe('Series browse + grid', () => {
     expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
     expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
 
-    // Select "Comedy": only the comedy rail remains.
+    // Select "Comedy": opens the comedy grid view instead of filtering browse.
     filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="2"]')!.click();
-    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
-    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(container.querySelector<HTMLElement>('.catalog-layer-grid')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('.catalog-tile[data-item-id="s2"]')?.textContent).toContain('Comedy Series');
 
-    // Select "All Categories": every rail returns.
-    const again = container.querySelector<HTMLElement>('.catalog-category-filter')!;
-    again.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value=""]')!.click();
+    // Back returns to browse with all rails.
+    view.handleAction('back');
     expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
     expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
   });
