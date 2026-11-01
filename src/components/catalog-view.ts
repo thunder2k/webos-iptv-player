@@ -616,7 +616,10 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
       this.place(tiles[Math.min(origin.index, tiles.length - 1)], via);
       return;
     }
-    this.place(browse.querySelector<HTMLElement>('.catalog-tile[data-focusable]') ?? this.nav.first(), via);
+    // Never pre-select a tile on a fresh enter: that would decode its poster
+    // immediately. Focus lands on the first tile only once the user navigates to
+    // it, which is when its poster loads.
+    this.place(null, via);
   }
 
   setAccount(account: PlaylistEntry): void {
@@ -1177,6 +1180,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     const id = el.dataset.itemId;
     if (id === undefined) return;
     this.activateTilePoster(el);
+    return;
   }
 
   // A tile flush with the rail's scrollport would clip its focus ring; keep a
@@ -1565,7 +1569,10 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     const groups = this.categoryFilter
       ? this.filteredBrowseGroups()
       : this.railGroups;
-    const hero = groups[0]?.items[0] ?? this.heroFallback();
+    // Never pre-select the first item: on a fresh enter or after filtering,
+    // nothing is focused yet, so the hero stays blank until the user navigates
+    // onto a tile.
+    const hero = null;
     const continueRail = this.collectionRail('continue');
     const watchlistRail = this.collectionRail('watchlist');
     const hasContent = this.categories.length > 0 || !!continueRail || !!watchlistRail;

@@ -283,11 +283,24 @@ describe('Series browse + grid', () => {
 
   it('reveals the tab bar when Up cannot move within the view', async () => {
     const { view, handlers } = await openWith();
-    view.handleAction('up');
-    expect(container.querySelector('.catalog-sort .focused')).not.toBeNull();
-    expect(handlers.onRevealTabBar).not.toHaveBeenCalled();
+    // A fresh enter lands on the category filter, not a tile, so no poster is
+    // pre-loaded; pressing Up from the top control reveals the tab bar.
+    expect(container.querySelector('.catalog-category-filter .focused')).not.toBeNull();
     view.handleAction('up');
     expect(handlers.onRevealTabBar).toHaveBeenCalled();
+  });
+
+  it('shows the kicker, not the first item, in the hero on browse enter', async () => {
+    await openWith(
+      [{ id: '1', name: 'Cat A' }],
+      [{ accountId: 'x1', seriesId: 's1', name: 'Series One', poster: 'http://host/a/poster.jpg', rating: '', categoryId: '1' }],
+    );
+    const heroTitle = container.querySelector('.catalog-hero-title')?.textContent;
+    // Nothing is pre-selected: the hero shows the kicker, not the first item.
+    expect(heroTitle).not.toBe('Series One');
+    expect(heroTitle).not.toBeNull();
+    // No tile is focused on enter.
+    expect(container.querySelector('.catalog-tile.focused')).toBeNull();
   });
 
   it('drills into a non-rail category grid and back to browse', async () => {

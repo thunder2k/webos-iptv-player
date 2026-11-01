@@ -653,11 +653,36 @@ describe('Movies browse + grid', () => {
 
   it('reveals the tab bar when Up cannot move within the view', async () => {
     const { view, handlers } = await openWith();
-    view.handleAction('up');
-    expect(container.querySelector('.catalog-sort .focused')).not.toBeNull();
-    expect(handlers.onRevealTabBar).not.toHaveBeenCalled();
+    // A fresh enter lands on the category filter, not a tile, so no poster is
+    // pre-loaded; pressing Up from the top control reveals the tab bar.
+    expect(container.querySelector('.catalog-category-filter .focused')).not.toBeNull();
     view.handleAction('up');
     expect(handlers.onRevealTabBar).toHaveBeenCalled();
+  });
+
+  it('does not decode any tile poster on browse enter', async () => {
+    const { view } = await openWith(
+      [{ id: '1', name: 'Cat A' }],
+      [{ ...vod('10', 'Movie One'), poster: 'http://host/a/poster.jpg' }],
+    );
+    const posters = container.querySelectorAll<HTMLElement>('.catalog-tile img.catalog-poster-img');
+    expect(posters.length).toBe(1);
+    // Nothing is focused on enter, so no poster is decoded until the user
+    // navigates onto a tile.
+    expect(posters[0].getAttribute('src')).toBeNull();
+  });
+
+  it('shows the kicker, not the first item, in the hero on browse enter', async () => {
+    await openWith(
+      [{ id: '1', name: 'Cat A' }],
+      [{ ...vod('10', 'Movie One'), poster: 'http://host/a/poster.jpg' }],
+    );
+    const heroTitle = container.querySelector('.catalog-hero-title')?.textContent;
+    // Nothing is pre-selected: the hero shows the kicker, not the first item.
+    expect(heroTitle).not.toBe('Movie One');
+    expect(heroTitle).not.toBeNull();
+    // No tile is focused on enter.
+    expect(container.querySelector('.catalog-tile.focused')).toBeNull();
   });
 
   // One failing rail category must not blank every other rail.
