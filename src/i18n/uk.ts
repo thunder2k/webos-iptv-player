@@ -123,6 +123,7 @@ export const UK_MESSAGES = {
   'catalog.sortOldest': 'Спочатку старі',
   'catalog.sortHighest': 'Високий рейтинг',
   'catalog.sortLowest': 'Низький рейтинг',
+  'catalog.categoryFilter': 'Категорія',
   'catalog.allCategories': 'Усі категорії',
   'catalog.seeAll': 'Показати всі',
   'catalog.movieCount': {

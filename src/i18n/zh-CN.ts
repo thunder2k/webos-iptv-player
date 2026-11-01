@@ -117,6 +117,7 @@ export const ZH_CN_MESSAGES = {
   'catalog.sortOldest': '最早',
   'catalog.sortHighest': '最高',
   'catalog.sortLowest': '最低',
+  'catalog.categoryFilter': '类别',
   'catalog.allCategories': '全部分类',
   'catalog.seeAll': '查看全部',
   'catalog.movieCount': {

@@ -117,6 +117,66 @@ describe('Movies browse + grid', () => {
       expect(container.querySelector('.catalog-layer-grid .focused')?.getAttribute('data-item-id')).toBe('11');
     });
 
+    it('filters browse to the selected category', async () => {
+      catalogMock.loadVodCategories.mockResolvedValue([
+        { id: '1', name: 'Action' },
+        { id: '2', name: 'Comedy' },
+      ]);
+      catalogMock.loadVodStreams.mockImplementation(async (_account, categoryId) =>
+        categoryId === '1' ? [vod('10', 'Action Movie', '1')] : [vod('20', 'Comedy Movie', '2')],
+      );
+      const handlers = { onRevealTabBar: vi.fn(), onBack: vi.fn(), onPlayVod: vi.fn() };
+      const view = new Movies(container, handlers);
+      Focus.setBase(() => view.focusScope);
+      await view.open(account);
+
+      const filter = container.querySelector<HTMLElement>('.catalog-category-filter')!;
+      expect(filter.querySelectorAll<HTMLElement>('.dropdown-option').length).toBe(3);
+
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+
+      // Select "Comedy": only the comedy rail remains.
+      filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="2"]')!.click();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+
+      // Select "All Categories": every rail returns.
+      const again = container.querySelector<HTMLElement>('.catalog-category-filter')!;
+      again.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value=""]')!.click();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+    });
+
+    it('filters browse to a category that is not a preloaded rail', async () => {
+      catalogMock.loadVodCategories.mockResolvedValue([
+        { id: '1', name: 'One' }, { id: '2', name: 'Two' }, { id: '3', name: 'Three' },
+        { id: '4', name: 'Four' }, { id: '5', name: 'Five' }, { id: '6', name: 'Six' },
+        { id: '7', name: 'Seven' }, { id: '8', name: 'Eight' },
+      ]);
+      catalogMock.loadVodStreams.mockImplementation(async (_account, categoryId) =>
+        categoryId === '7' ? [vod('70', 'Seven Movie', '7')] : [],
+      );
+      const handlers = { onRevealTabBar: vi.fn(), onBack: vi.fn(), onPlayVod: vi.fn() };
+      const view = new Movies(container, handlers);
+      Focus.setBase(() => view.focusScope);
+      await view.open(account);
+
+      // Only the first 6 categories are preloaded as rails; category 7 is not.
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:7"]')).toBeNull();
+
+      const filter = container.querySelector<HTMLElement>('.catalog-category-filter')!;
+      filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="7"]')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:7"]')).not.toBeNull();
+      expect(container.querySelector<HTMLElement>('.catalog-tile[data-item-id="70"]')?.textContent).toContain('Seven Movie');
+    });
+
     it('leaves a managed collection grid where the wheel stops it', async () => {
       savedTitles(80);
       const { view } = await openWith();
@@ -358,7 +418,8 @@ describe('Movies browse + grid', () => {
         poster: '', rating: '', categoryId: '1', containerExtension: 'mp4', addedAt: 1,
       }));
       const { view } = await openWith(undefined, streams());
-      const rows = Array.from(browse().querySelector('.catalog-rails-body')!.children);
+      const rows = Array.from(browse().querySelector('.catalog-rails-body')!.children)
+        .filter(row => !row.classList.contains('catalog-category-filter'));
       expect(rows.map(row => row.classList.contains('catalog-sort') ? 'sort' : row.getAttribute('data-rail-key')))
         .toEqual(['continue', 'watchlist', 'sort', 'cat:1']);
       const special = () => ['continue', 'watchlist'].map(key =>
@@ -396,7 +457,7 @@ describe('Movies browse + grid', () => {
       storageMock.setCatalogSort.mockReturnValue(false);
       choose('name');
       expect(order()).toEqual(['10', '2', '1']);
-      expect(browse().querySelector('.dropdown-current')?.textContent).toBe('Default');
+      expect(browse().querySelector('.catalog-sort .dropdown-current')?.textContent).toBe('Default');
       expect(browse().querySelector('[role="radiogroup"]')).toBeNull();
       expect(track.scrollLeft).toBe(230);
     });
@@ -447,7 +508,7 @@ describe('Movies browse + grid', () => {
       await openWith(undefined, streams());
       expect(storageMock.getCatalogSort).toHaveBeenCalledWith('vod');
       expect(order()).toEqual(['10', '1', '2']);
-      expect(browse().querySelector('.dropdown-current')?.textContent).toBe('Rating');
+      expect(browse().querySelector('.catalog-sort .dropdown-current')?.textContent).toBe('Rating');
       expect(browse().querySelector('[data-sort-direction="asc"]')?.getAttribute('aria-checked')).toBe('true');
     });
   });

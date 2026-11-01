@@ -124,3 +124,27 @@ describe('CatalogView lazy posters', () => {
     expect(hero.style.backgroundImage).toBe(before); // full-screen backdrop untouched
   });
 });
+
+describe('CatalogView category filter', () => {
+  it('lists All Categories followed by every category', () => {
+    (view as any).categories = [
+      { id: 'c1', name: 'Alpha' },
+      { id: 'c2', name: 'Bravo' },
+    ];
+    (view as any).categoryFilter = null;
+    const div = document.createElement('div');
+    div.innerHTML = String((view as any).categoryFilterControls());
+    const options = Array.from(div.querySelectorAll<HTMLElement>('.dropdown-option')).map(o => o.textContent!);
+    expect(options).toEqual(['All Categories', 'Alpha', 'Bravo']);
+    expect(div.querySelector<HTMLElement>('.dropdown-option.active')?.getAttribute('data-dropdown-value')).toBe('');
+    expect(div.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="c1"]')?.classList.contains('active')).toBe(false);
+  });
+
+  it('marks the selected category active', () => {
+    (view as any).categories = [{ id: 'c1', name: 'Alpha' }];
+    (view as any).categoryFilter = 'c1';
+    const div = document.createElement('div');
+    div.innerHTML = String((view as any).categoryFilterControls());
+    expect(div.querySelector<HTMLElement>('.dropdown-option.active')?.getAttribute('data-dropdown-value')).toBe('c1');
+  });
+});

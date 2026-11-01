@@ -119,6 +119,7 @@ export const IT_MESSAGES = {
   'catalog.sortOldest': 'Meno recenti',
   'catalog.sortHighest': 'Più alta',
   'catalog.sortLowest': 'Più bassa',
+  'catalog.categoryFilter': 'Categoria',
   'catalog.allCategories': 'Tutte le categorie',
   'catalog.seeAll': 'Mostra tutto',
   'catalog.movieCount': {

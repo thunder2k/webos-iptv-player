@@ -115,6 +115,18 @@
   flex: none;
 }
 .catalog-sort-direction-icon svg { width: 100%; height: 100%; }
+.catalog-category-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.catalog-category-filter .catalog-sort-label { font-size: 24px; color: var(--text-secondary); }
+.catalog-category-filter .dropdown { min-width: 280px; }
+.catalog-category-filter .dropdown-sizer { font-weight: 700; }
+.catalog-category-filter .dropdown-trigger,
+.catalog-category-filter .dropdown-option { font-family: inherit; line-height: 1.4; }
 .catalog-grid-track { position: relative; width: 100%; }
 .catalog-grid-cell { position: absolute; width: 220px; height: 371px; }
 

@@ -122,6 +122,7 @@ export const EN_MESSAGES = {
   'catalog.sortOldest': 'Oldest',
   'catalog.sortHighest': 'Highest',
   'catalog.sortLowest': 'Lowest',
+  'catalog.categoryFilter': 'Category',
   'catalog.allCategories': 'All Categories',
   'catalog.seeAll': 'See all',
   'catalog.movieCount': {

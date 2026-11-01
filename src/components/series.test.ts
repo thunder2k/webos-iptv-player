@@ -90,6 +90,37 @@ describe('Series browse + grid', () => {
     expect(container.querySelector('.catalog-layer-browse .focused')?.getAttribute('data-key')).toBe('r:e4');
   });
 
+  it('filters browse to the selected category', async () => {
+    catalogMock.loadSeriesCategories.mockResolvedValue([
+      { id: '1', name: 'Action' },
+      { id: '2', name: 'Comedy' },
+    ]);
+    catalogMock.loadSeries.mockImplementation(async (_account, categoryId) =>
+      categoryId === '1' ? [series('s1', 'Action Series', '1')] : [series('s2', 'Comedy Series', '2')],
+    );
+    const handlers = { onRevealTabBar: vi.fn(), onBack: vi.fn(), onPlayVod: vi.fn() };
+    const view = new Series(container, handlers);
+    Focus.setBase(() => view.focusScope);
+    await view.open(account);
+
+    const filter = container.querySelector<HTMLElement>('.catalog-category-filter')!;
+    expect(filter.querySelectorAll<HTMLElement>('.dropdown-option').length).toBe(3);
+
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+
+    // Select "Comedy": only the comedy rail remains.
+    filter.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value="2"]')!.click();
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+
+    // Select "All Categories": every rail returns.
+    const again = container.querySelector<HTMLElement>('.catalog-category-filter')!;
+    again.querySelector<HTMLElement>('.dropdown-option[data-dropdown-value=""]')!.click();
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:1"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('.catalog-rail[data-rail-key="cat:2"]')).not.toBeNull();
+  });
+
   it('leaves the collection when playback completes its final episode', async () => {
     storageMock.getResumeList.mockReturnValue([{
       accountId: 'x1', kind: 'episode', itemId: 'e1', name: 'Title 1', poster: '', ext: 'mp4',

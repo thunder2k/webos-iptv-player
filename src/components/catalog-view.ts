@@ -67,6 +67,11 @@ const CATEGORY_RAIL_VIEWPORT = 1760;
 // Matches the rail track's padding and its end spacer in catalog-view.css.
 const RAIL_EDGE_GUTTER = 12;
 
+// Cap the number of category options rendered in the filter dropdown so a
+// huge catalog never inflates the dropdown (or the test DOM) with thousands
+// of buttons. "All Categories" plus a bounded prefix is plenty to pick from.
+const CATEGORY_FILTER_MAX_OPTIONS = 200;
+
 export interface CatalogHandlers {
   onRevealTabBar: () => void;
   onBack: () => void;
@@ -142,6 +147,8 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   private serverItemsByCategory: Record<string, I[]> = {};
   private sort: CatalogSortPreference = { by: 'default', direction: 'asc' };
   private resetBrowseRailOffsets = false;
+  // The browse category filter: a category id, or null for "All Categories".
+  protected categoryFilter: string | null = null;
   private browseSortReturn: string | null = null;
   protected gridCategory: C | null = null;
   private collection: CollectionKind | null = null;
@@ -210,21 +217,21 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     this.container.addEventListener('nav:hover', (e: Event) => {
       const target = e.target as HTMLElement;
       if (!target.hasAttribute('data-focusable') || !this.layers[this.mode].contains(target)) return;
-      const menu = this.openSortMenu();
+      const menu = this.openDropdownMenu();
       if (menu && !menu.contains(target)) return;
       this.place(target, 'pointer');
     });
     this.container.addEventListener('click', (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (!target.closest('.catalog-sort, [data-collection-manage], [data-collection-see-all], [data-collection-action]')) return;
+      if (!target.closest('.catalog-sort, .catalog-category-filter, [data-collection-manage], [data-collection-see-all], [data-collection-action]')) return;
       const el = target.closest<HTMLElement>('[data-focusable]');
       if (!el || !this.layers[this.mode].contains(el)) return;
       this.place(el, 'pointer');
       this.onSelect();
     });
     document.addEventListener('click', (e: MouseEvent) => {
-      const menu = this.openSortMenu();
-      if (menu && !menu.contains(e.target as Node)) this.dismissSort(null);
+      const menu = this.openDropdownMenu();
+      if (menu && !menu.contains(e.target as Node)) this.dismissDropdown(null);
     }, true);
     // A ring the pointer left stays off; the next key only shows it again.
     this.container.addEventListener('nav:unhover', (e: Event) => {
@@ -314,7 +321,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   }
 
   protected showLayer(mode: Mode): void {
-    if (mode !== this.mode) this.dismissSort(null);
+    if (mode !== this.mode) this.dismissDropdown(null);
     if (this.mode === 'browse' && mode !== 'browse') this.leaveBrowse();
     this.mode = mode;
     (Object.keys(this.layers) as Mode[]).forEach((key) => {
@@ -615,7 +622,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   setAccount(account: PlaylistEntry): void {
     if (this.account?.id !== account.id) {
       this.clearPrompt.hide();
-      this.dismissSort(null);
+      this.dismissDropdown(null);
       this.requestController?.abort();
       this.onRequestSessionReset();
       this.nav.resetRecovery();
@@ -656,7 +663,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
 
   deactivate(): void {
     this.clearPrompt.hide();
-    this.dismissSort(null);
+    this.dismissDropdown(null);
     this.requestController?.abort();
     this.requestController = null;
     this.onRequestSessionReset();
@@ -666,7 +673,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     this.clearPrompt.hide();
     this.collection = null;
     this.managing = false;
-    this.dismissSort(null);
+    this.dismissDropdown(null);
     const signal = this.beginRequests();
     this.account = account;
     this.deepLinkBack = null;
@@ -695,6 +702,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
         accountId: account.id,
         categoryId: category.id,
       }));
+      this.categoryFilter = null;
       const railCats = this.categories.slice(0, CONFIG.XTREAM.RAIL_CATEGORIES);
       // Settle each rail on its own: one failing category must not blank the rest.
       const loaded = await Promise.all(
@@ -816,7 +824,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
 
   handleAction(action: Action): void {
     this.syncNav();
-    if ((isFocusMove(action) || (action === 'select' && this.openSortMenu())) && this.ringHidden()) {
+    if ((isFocusMove(action) || (action === 'select' && this.openDropdownMenu())) && this.ringHidden()) {
       this.request(this.focusScope.focusKey, 'key');
       return;
     }
@@ -829,15 +837,15 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   }
 
   private route(action: Action): void {
-    const menu = this.openSortMenu();
+    const menu = this.openDropdownMenu();
     if (menu) {
-      if (action === 'back' || action === 'left') this.dismissSort('key');
+      if (action === 'back' || action === 'left') this.dismissDropdown('key');
       else if (action === 'select') this.onSelect();
       else if (action === 'up' || action === 'down') this.nav.move(action);
       return;
     }
     const current = this.current();
-    const sortRow = current?.closest<HTMLElement>('.catalog-sort, .catalog-collection-actions');
+    const sortRow = current?.closest<HTMLElement>('.catalog-sort, .catalog-category-filter, .catalog-collection-actions');
     const horizontalRegion = sortRow ?? (this.mode === 'browse'
       ? current?.closest<HTMLElement>('.catalog-rail-track:not(.catalog-category-rail)') : null);
     if (horizontalRegion && (action === 'left' || action === 'right')) {
@@ -953,7 +961,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
       }
       const dd = el.closest<HTMLElement>('.dropdown');
       if (el.hasAttribute('data-dropdown-trigger') && dd) {
-        if (this.openSortMenu()) this.dismissSort(this.placementVia());
+        if (this.openDropdownMenu()) this.dismissDropdown(this.placementVia());
         else {
           this.nav.setRestrict(dd.querySelector<HTMLElement>('.dropdown-menu'));
           this.pick(this.placementVia(), () => toggleDropdown(this.container, this.nav, dd));
@@ -964,6 +972,21 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
         this.nav.setRestrict(this.layers[this.mode]);
         this.applySort(value === this.sort.by
           ? this.sort : { by: value, direction: defaultSortDirection(value) });
+      }
+      return;
+    }
+    if (el.closest('.catalog-category-filter')) {
+      const dd = el.closest<HTMLElement>('.dropdown');
+      if (el.hasAttribute('data-dropdown-trigger') && dd) {
+        if (this.openDropdownMenu()) this.dismissDropdown(this.placementVia());
+        else {
+          this.nav.setRestrict(dd.querySelector<HTMLElement>('.dropdown-menu'));
+          this.pick(this.placementVia(), () => toggleDropdown(this.container, this.nav, dd));
+        }
+      } else if (el.dataset.dropdownValue !== undefined) {
+        commitDropdownOption(el);
+        this.nav.setRestrict(this.layers[this.mode]);
+        this.applyCategoryFilter(el.dataset.dropdownValue);
       }
       return;
     }
@@ -1258,12 +1281,12 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     );
   }
 
-  private openSortMenu(): HTMLElement | null {
-    return this.layers[this.mode].querySelector<HTMLElement>('.catalog-sort .dropdown.open');
+  private openDropdownMenu(): HTMLElement | null {
+    return this.layers[this.mode].querySelector<HTMLElement>('.catalog-sort .dropdown.open, .catalog-category-filter .dropdown.open');
   }
 
-  private dismissSort(via: Via | null): void {
-    const menu = this.openSortMenu();
+  private dismissDropdown(via: Via | null): void {
+    const menu = this.openDropdownMenu();
     if (!menu) return;
     this.nav.setRestrict(this.layers[this.mode]);
     this.pick(via, () => closeDropdown(this.nav, menu));
@@ -1292,6 +1315,47 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     else this.renderBrowse(false);
     this.place(this.layer().querySelector<HTMLElement>(direction
       ? `[data-sort-direction="${direction}"]` : '.catalog-sort .dropdown-trigger'), this.placementVia());
+  }
+
+  private async applyCategoryFilter(value: string): Promise<void> {
+    this.categoryFilter = value === '' ? null : value;
+    const categoryId = this.categoryFilter;
+    if (categoryId && !this.itemsByCategory[categoryId]) {
+      // The category isn't a preloaded rail: load its items so the filter can show them.
+      const signal = this.requestSignal;
+      if (signal && !signal.aborted && this.account) {
+        try {
+          const items = await this.loadVisibleItems(this.account, categoryId, signal);
+          if (!signal.aborted && this.categoryFilter === categoryId) {
+            this.setCategoryItems(categoryId, items);
+          }
+        } catch (err) {
+          if (!signal.aborted) {
+            log.error(
+              'Catalog category filter load failed',
+              'event=xtream.view.load.failed',
+              'operation=category-filter',
+              `mode=${this.parentalKind}`,
+              err,
+            );
+          }
+        }
+      }
+    }
+    this.renderBrowse(false);
+    this.place(this.layer().querySelector<HTMLElement>('.catalog-category-filter .dropdown-trigger'), this.placementVia());
+  }
+
+  private filteredBrowseGroups(): { category: C; items: I[] }[] {
+    const categoryId = this.categoryFilter!;
+    const rail = this.railGroups.find(g => g.category.id === categoryId);
+    if (rail) return [rail];
+    const category = this.categories.find(c => c.id === categoryId);
+    if (!category) return [];
+    return [{
+      category,
+      items: (this.itemsByCategory[categoryId] ?? []).slice(0, CONFIG.XTREAM.RAIL_ITEMS),
+    }];
   }
 
   private visibleResume(accountId: string): ResumeEntry[] {
@@ -1450,6 +1514,19 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
     morph(this.layers[mode], this.loadingMarkup());
   }
 
+  private categoryFilterControls(): Safe {
+    const filter = this.categoryFilter ?? '';
+    return html`
+      <div class="catalog-category-filter" data-nav-container data-self-activate>
+        <span class="catalog-sort-label">${t('catalog.categoryFilter')}</span>
+        ${dropdown(`${this.scopeName()}-${this.mode}-category-filter`, [
+          { value: '', label: t('catalog.allCategories') },
+          ...this.categories.slice(0, CATEGORY_FILTER_MAX_OPTIONS).map(c => ({ value: c.id, label: c.name })),
+        ], filter)}
+      </div>
+    `;
+  }
+
   private sortControls(): Safe {
     const by = this.sort.by;
     return html`
@@ -1481,11 +1558,14 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   }
 
   protected renderBrowse(restoreFocus = true): void {
-    this.dismissSort(null);
+    this.dismissDropdown(null);
     this.showLayer('browse');
     const browse = this.layers.browse;
     this.resume = this.visibleResume(this.account!.id);
-    const hero = this.railGroups[0]?.items[0] ?? this.heroFallback();
+    const groups = this.categoryFilter
+      ? this.filteredBrowseGroups()
+      : this.railGroups;
+    const hero = groups[0]?.items[0] ?? this.heroFallback();
     const continueRail = this.collectionRail('continue');
     const watchlistRail = this.collectionRail('watchlist');
     const hasContent = this.categories.length > 0 || !!continueRail || !!watchlistRail;
@@ -1520,9 +1600,10 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
               <div class="catalog-rails-body">
                 ${continueRail}
                 ${watchlistRail}
+                ${this.categories.length ? this.categoryFilterControls() : ''}
                 ${this.categories.length ? this.sortControls() : ''}
-                ${this.railGroups.map((r) => this.categoryRail(r))}
-                ${moreCats.length ? html`
+                ${groups.map((r) => this.categoryRail(r))}
+                ${!this.categoryFilter && moreCats.length ? html`
                   <div class="catalog-rail" data-key="rail:all-categories"
                        data-rail-key="all-categories">
                     <h2 class="catalog-rail-title">${t('catalog.allCategories')}</h2>
@@ -1598,7 +1679,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I exte
   // `followView`: the window follows a user scroll, whose offset stays as is;
   // above the first row the window's offset is 0 while the view's is not.
   protected renderGrid(restoreFocus = true, followView = false): void {
-    this.dismissSort(null);
+    this.dismissDropdown(null);
     this.showLayer('grid');
     const gridLayer = this.layers.grid;
     const cat = this.gridCategory;

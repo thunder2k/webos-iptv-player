@@ -128,6 +128,7 @@ html.q-no-flex-gap .search-program-row > * + * { margin-left: 24px; }
 html.q-no-flex-gap .catalog-rail-track > * + * { margin-left: 20px; }
 html.q-no-flex-gap .catalog-sort > * + * { margin-left: 16px; }
 html.q-no-flex-gap .catalog-sort .catalog-sort-direction > * + * { margin-left: 10px; }
+html.q-no-flex-gap .catalog-category-filter > * + * { margin-left: 16px; }
 html.q-no-flex-gap .movies-detail > * + * { margin-left: 56px; }
 html.q-no-flex-gap .detail-actions > * + * { margin-left: 12px; }
 html.q-no-flex-gap .detail-btn > * + * { margin-left: 10px; }

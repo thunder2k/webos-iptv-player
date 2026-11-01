@@ -123,6 +123,7 @@ export const PL_MESSAGES = {
   'catalog.sortOldest': 'Najstarsze',
   'catalog.sortHighest': 'Najwyżej oceniane',
   'catalog.sortLowest': 'Najniżej oceniane',
+  'catalog.categoryFilter': 'Kategoria',
   'catalog.allCategories': 'Wszystkie kategorie',
   'catalog.seeAll': 'Zobacz wszystko',
   'catalog.movieCount': {

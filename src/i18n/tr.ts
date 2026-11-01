@@ -117,6 +117,7 @@ export const TR_MESSAGES = {
   'catalog.sortOldest': 'En eski',
   'catalog.sortHighest': 'En yüksek',
   'catalog.sortLowest': 'En düşük',
+  'catalog.categoryFilter': 'Kategori',
   'catalog.allCategories': 'Tüm Kategoriler',
   'catalog.seeAll': 'Tümünü gör',
   'catalog.movieCount': {
