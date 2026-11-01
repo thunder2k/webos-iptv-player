@@ -730,7 +730,6 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
     // A poster URL sits inside a CSS url('…') string, where the html escaper's
     // entity encoding is decoded before CSS parses it; percent-encode the
     // characters that could break out of the string.
-    const heroBg = hero ? this.itemPoster(hero).replace(/["'()\\\s]/g, encodeURIComponent) : '';
     // Once some categories have no rail, "All Categories" lists every category,
     // rails included, so it is the one complete index of the catalog.
     const moreCats = this.categories.length > this.railGroups.length ? this.categories : [];
@@ -746,7 +745,7 @@ export abstract class CatalogView<C extends { id: string; name: string }, I> {
         ${!hasContent
           ? html`<p class="catalog-hint catalog-empty">${this.emptyMessage}</p>`
           : html`
-            <div class="catalog-hero" style="background-image: url('${heroBg}')">
+            <div class="catalog-hero">
               <div class="catalog-hero-scrim"></div>
             </div>
             <div class="catalog-hero-body">

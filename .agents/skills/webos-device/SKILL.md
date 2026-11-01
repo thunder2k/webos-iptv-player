@@ -11,6 +11,7 @@ description: Install, run, and debug the app on a real LG webOS TV — packaging
 ./build.sh                     # package the IPK (needs ares-package from @webos-tools/cli)
 ./build.sh --install [device]  # build + ares-install + cold-restart on a TV
 ```
+**Always create a new version of the app bumping version numberbefore installing it on a TV.** webOS does not update the in-memory copy of the app on an in-place upgrade, so a relaunch resumes the stale instance. The `--install` option closes the app, then cold-starts it to load the new bundle. If you install another way, close and relaunch it.
 
 **Install needs a cold restart.** webOS keeps the old instance suspended
 through an in-place upgrade, and a plain relaunch resumes the stale
@@ -52,3 +53,7 @@ The desktop preview and the Chromium 53 simulation cannot reproduce
 engine-level layout, V8 behavior, native media pipelines (audio and subtitle
 track switching, DASH), Luna services, or Activity Manager callbacks. Verify
 those on a TV before calling the change done.
+
+## Compatibility
+
+Always test on the lowest supported webOS version. The LG TV emulator is not a reliable substitute for a real device. Fix the code, deploy on the telly which is on the same lan, get the logs and make sure everything works fine, otherwise keep iterating. The telly is an OLED65B7V-Z with webOS TV Version 3.93-6270915 (dreadlocks2-dudhwa)
