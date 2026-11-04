@@ -580,7 +580,13 @@ class App {
             }
             if (resp && typeof resp === 'object' && 'port' in resp) {
               const p = (resp as { port?: unknown }).port;
-              if (typeof p === 'number') setServicePort(p);
+              if (typeof p === 'number') {
+                setServicePort(p);
+                // Update the setup UI now that the port is known, so the user
+                // sees the QR code instead of "Checking setup service…" without
+                // waiting for finishBundledServiceInit().
+                void this.settings.refreshSetupInfo();
+              }
             }
             log.info('Bundled service start onSuccess:', JSON.stringify(resp));
             finish(true, 'onSuccess');

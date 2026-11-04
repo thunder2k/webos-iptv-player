@@ -232,10 +232,15 @@ vi.mock('../services/reminder-service', () => ({
   },
 }));
 vi.mock('../services/setup-client', () => ({ SetupClient: setupMock }));
+vi.mock('../services/service-http', () => ({
+  setServicePort: vi.fn(),
+  serviceBase: vi.fn(() => null),
+}));
 vi.mock('../services/channel-health', () => ({ ChannelHealthService: healthMock }));
 
 import { Settings, liveCategoriesButtonContent } from './settings';
 import { setLocale } from '../i18n';
+import { setServicePort, serviceBase } from '../services/service-http';
 import { PlaylistService } from '../services/playlist-service';
 import { EpgService } from '../services/epg-service';
 import { channelKey, legacyChannelKey } from '../utils/channel';
@@ -2089,6 +2094,7 @@ describe('Settings uploads section', () => {
   });
 
   it('renders the QR + URL when the setup service is reachable', async () => {
+    (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue('http://127.0.0.1:8890');
     setupMock.getInfo.mockResolvedValueOnce({
       ip: '192.168.1.2',
       port: 8890,
@@ -2108,7 +2114,8 @@ describe('Settings uploads section', () => {
   });
 
   it('shows an unavailable message when the setup service is unreachable', async () => {
-    // Default mock returns null -> service unreachable.
+    // Port is known but the HTTP request fails -> service unreachable.
+    (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue('http://127.0.0.1:8890');
     settings.render();
     await new Promise((r) => setTimeout(r, 0));
     expect(container.querySelector('#setup-info')!.textContent)
@@ -2116,8 +2123,16 @@ describe('Settings uploads section', () => {
   });
 
   it('replaces the early unavailable state when the service becomes ready', async () => {
+    // With no port known yet, refreshSetupInfo() returns early and leaves
+    // "Checking setup service…" instead of claiming the service is unavailable.
+    (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue(null);
     settings.render();
     await new Promise((r) => setTimeout(r, 0));
+    expect(container.querySelector('#setup-info')!.textContent)
+      .toContain('Checking setup service…');
+
+    // Once the bundled service has started and set the port, the QR renders.
+    (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue('http://127.0.0.1:8890');
     setupMock.getInfo.mockResolvedValueOnce({
       ip: '192.168.1.2',
       port: 8890,

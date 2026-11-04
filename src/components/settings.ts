@@ -21,6 +21,7 @@ import {
 } from '../services/idb-cache';
 import { UploadClient, uploadIdFromUrl } from '../services/upload-client';
 import { SetupClient } from '../services/setup-client';
+import { serviceBase } from '../services/service-http';
 import { ReminderService } from '../services/reminder-service';
 import {
   ChannelHealthService,
@@ -2997,6 +2998,10 @@ export class Settings {
   async refreshSetupInfo(): Promise<void> {
     const el = $('#setup-info', this.container);
     if (!el) return;
+    // Don't claim the service is unavailable before we even know its port.
+    // finishBundledServiceInit() calls refreshSetupInfo() again once the
+    // bundled service has started and setServicePort() has run.
+    if (!serviceBase()) return;
     const info = await SetupClient.getInfo();
     // Re-resolve in case the user navigated away or settings re-rendered.
     const target = $('#setup-info', this.container);
