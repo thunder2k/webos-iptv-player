@@ -3001,7 +3001,10 @@ export class Settings {
     // Don't claim the service is unavailable before we even know its port.
     // finishBundledServiceInit() calls refreshSetupInfo() again once the
     // bundled service has started and setServicePort() has run.
-    if (!serviceBase()) return;
+    if (!serviceBase()) {
+      log.info('event=setup.service.port_unknown');
+      return;
+    }
 
     // Retry getInfo() a few times — the bundled service may have just started
     // and its HTTP listener may not be accepting connections yet.
@@ -3010,6 +3013,12 @@ export class Settings {
       info = await SetupClient.getInfo();
       if (info) break;
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    if (!info) {
+      log.info('event=setup.service.info_failed');
+    } else {
+      log.info('event=setup.service.info_succeeded');
     }
 
     // Re-resolve in case the user navigated away or settings re-rendered.

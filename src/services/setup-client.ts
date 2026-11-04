@@ -71,18 +71,19 @@ class SetupClientImpl {
   async getInfo(): Promise<ServiceInfo | null> {
     const base = serviceBase();
     if (!base) {
-      log.debug('getInfo skipped: service port not yet known');
+      log.info('event=setup.service.port_unknown');
       return null;
     }
     try {
       const res = await fetchWithTimeout(`${base}/info`, {}, TIMEOUT);
       if (!res.ok) {
-        log.warn('getInfo: HTTP', res.status);
+        log.warn('getInfo: HTTP', res.status, 'event=setup.service.info_http_error',
+          `status=${res.status}`);
         return null;
       }
       return (await res.json()) as ServiceInfo;
     } catch (e) {
-      log.debug('getInfo failed (service likely not running):', e);
+      log.info('event=setup.service.info_fetch_error', 'error=fetch_failed');
       return null;
     }
   }

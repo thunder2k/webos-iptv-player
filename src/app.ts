@@ -582,6 +582,7 @@ class App {
               const p = (resp as { port?: unknown }).port;
               if (typeof p === 'number') {
                 setServicePort(p);
+                log.info('event=setup.service.port_set', `port=${p}`);
                 // Update the setup UI now that the port is known, so the user
                 // sees the QR code instead of "Checking setup service…" without
                 // waiting for finishBundledServiceInit().
