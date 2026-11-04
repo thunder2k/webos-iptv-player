@@ -2117,10 +2117,11 @@ describe('Settings uploads section', () => {
     // Port is known but the HTTP request fails -> service unreachable.
     (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue('http://127.0.0.1:8890');
     settings.render();
-    await new Promise((r) => setTimeout(r, 1500));
+    // 6 retries × 1s = 6s; wait enough for all retries to exhaust.
+    await new Promise((r) => setTimeout(r, 7000));
     expect(container.querySelector('#setup-info')!.textContent)
       .toContain('The setup service is currently unavailable.');
-  });
+  }, 10000);
 
   it('replaces the early unavailable state when the service becomes ready', async () => {
     // With no port known yet, refreshSetupInfo() returns early and leaves

@@ -53,6 +53,10 @@ export class LunaResponse {
     return this._body;
   }
 
+  async json(): Promise<unknown> {
+    return JSON.parse(this._body);
+  }
+
   async arrayBuffer(): Promise<Uint8Array> {
     const bytes = new Uint8Array(this._body.length);
     for (let i = 0; i < this._body.length; i++) {

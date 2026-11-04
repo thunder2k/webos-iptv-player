@@ -1,5 +1,6 @@
 import { gunzipSync } from 'fflate';
 import { fetchViaLuna, fetchViaLunaText } from './luna-fetch';
+import { isLunaAvailable } from '../services/luna';
 
 // On webOS 3.9 / Chromium 38, `fetch` may exist as a function but throw
 // "undefined is not a function" when called. AbortSignal.prototype.addEventListener
@@ -48,17 +49,31 @@ export async function fetchWithTimeout(
   const controller = createAbortController();
   const timer = setTimeout(() => controller?.abort(), timeout);
 
-  let response: Response;
+  let response: Response | null = null;
+  let nativeError: unknown;
   try {
     response = await fetch(url, withAbortSignal(options, controller));
-  } catch {
+  } catch (err) {
+    nativeError = err;
     // Chromium 38 does not support the `signal` option on fetch(); retry without it
-    response = await fetch(url, options);
+    try {
+      response = await fetch(url, options);
+    } catch (err2) {
+      nativeError = err2;
+    }
   } finally {
     clearTimeout(timer);
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  return response;
+  if (response) {
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    return response;
+  }
+  // Native fetch failed entirely (e.g. blocked on local addresses). Fall back to
+  // the bundled service via Luna if it is available.
+  if (isLunaAvailable()) {
+    return fetchViaLuna(url, timeout) as unknown as Response;
+  }
+  throw nativeError;
 }
 
 export async function fetchText(url: string, timeout = 30000): Promise<string> {

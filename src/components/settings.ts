@@ -3006,13 +3006,14 @@ export class Settings {
       return;
     }
 
-    // Retry getInfo() a few times — the bundled service may have just started
-    // and its HTTP listener may not be accepting connections yet.
+    // Retry getInfo() several times — the bundled service may have just started
+    // and its HTTP listener may not be accepting connections yet, or the Luna
+    // round trip may be slow on this device.
     let info: Awaited<ReturnType<typeof SetupClient.getInfo>> | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
       info = await SetupClient.getInfo();
       if (info) break;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+      if (attempt < 5) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     if (!info) {
