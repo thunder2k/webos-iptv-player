@@ -13,7 +13,7 @@ interface ManualEpgSourcePayload {
 
 export type SetupActionPayload =
   | { type: 'playlist'; name: string; url: string }
-  | { type: 'xtream'; serverUrl: string; username: string; password: string }
+  | { type: 'xtream'; serverUrl: string; username: string; password: string; label?: string }
   | { type: 'manual-epg-sources'; sources: ManualEpgSourcePayload[] }
   | { type: 'remove-source'; sourceId: string }
   | { type: 'set-source-enabled'; sourceId: string; enabled: boolean }
@@ -74,6 +74,7 @@ export function parseSetupAction(value: unknown): SetupActionPayload {
       serverUrl: httpUrl(input.serverUrl, 'server URL'),
       username: stringValue(input.username, 'username', 256),
       password: passwordValue(input.password),
+      ...(input.label !== undefined ? { label: stringValue(input.label, 'account label', 120, false) } : {}),
     };
   }
   if (input.type === 'manual-epg-sources') {

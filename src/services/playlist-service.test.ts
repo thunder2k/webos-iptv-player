@@ -1276,6 +1276,15 @@ describe('PlaylistService.load', () => {
     expect(fetchTextMock).toHaveBeenCalled();
   });
 
+  it('passes a shortened timeout to fetchAndParseM3U on initial load', async () => {
+    cacheMock.getCachedPlaylist.mockResolvedValue(null);
+    storageMock.getPlaylists.mockReturnValue([{ name: 'P2', url: 'http://host2/p2.m3u' }]);
+    fetchTextMock.mockResolvedValue(P2);
+    await PlaylistService.load(undefined, { timeoutMs: 8000 });
+    const call = vi.mocked(fetchAndParseM3U).mock.calls[0];
+    expect(call[1]).toBe(8000);
+  });
+
   it('does not infer cached channel types from their URLs', async () => {
     const cached = [
       channel({

@@ -90,8 +90,18 @@ export class LunaResponse {
 /**
  * Fetch a URL via the bundled service's Luna `fetch_url` method. Returns a
  * fetch-compatible Response-like object, or rejects on error/timeout.
+ *
+ * `options.method` defaults to 'GET'. `options.body` is sent as the request
+ * body for methods like PUT and DELETE. This is needed on webOS 3.9 where
+ * fetch() is unavailable and all HTTP routes through fetch_url, which only
+ * used to support GET.
  */
-export async function fetchViaLuna(url: string, timeout = FETCH_TIMEOUT): Promise<LunaResponse> {
+export async function fetchViaLuna(
+  url: string,
+  options: { method?: string; body?: string; timeout?: number } = {}
+): Promise<LunaResponse> {
+  const { method = 'GET', body, timeout = FETCH_TIMEOUT } = options;
+
   if (!isLunaAvailable()) {
     throw new Error('Luna not available — cannot fetch via bundled service');
   }
@@ -122,7 +132,7 @@ export async function fetchViaLuna(url: string, timeout = FETCH_TIMEOUT): Promis
     try {
       lunaRequest(`luna://${CONFIG.SERVICE_ID}`, {
         method: 'fetch_url',
-        parameters: { url },
+        parameters: { url, method, body },
         onSuccess: (resp: unknown) => {
           const r = resp as LunaFetchResponse | undefined;
           if (!r || typeof r !== 'object') {
@@ -156,7 +166,7 @@ export async function fetchViaLuna(url: string, timeout = FETCH_TIMEOUT): Promis
  * responses, matching the fetchText contract.
  */
 export async function fetchViaLunaText(url: string, timeout = FETCH_TIMEOUT): Promise<string> {
-  const response = await fetchViaLuna(url, timeout);
+  const response = await fetchViaLuna(url, { timeout });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }

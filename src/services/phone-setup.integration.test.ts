@@ -150,4 +150,39 @@ describe('phone setup synchronization', () => {
     expect(await (await fetch(`${baseUrl}/setup-state${setupToken}`)).json())
       .toMatchObject({ xtreamAccounts: [] });
   });
+
+  it('uses account label as xtream account name when provided', async () => {
+    await submit({
+      type: 'xtream',
+      serverUrl: 'http://host/l',
+      username: 'u2',
+      password: 'p2',
+      label: 'My Account',
+    });
+    await expect(SetupClient.applyPendingActions()).resolves.toBe(true);
+
+    expect(StorageService.getPlaylists()).toEqual([
+      {
+        id: expect.any(String),
+        name: 'My Account',
+        url: 'http://host/l',
+        source: 'xtream',
+        xtream: {
+          username: 'u2',
+          password: 'p2',
+          liveOutput: 'ts',
+        },
+      },
+    ]);
+
+    const state = await (await fetch(`${baseUrl}/setup-state${setupToken}`)).json();
+    expect(state.xtreamAccounts).toEqual([
+      {
+        id: expect.any(String),
+        name: 'My Account',
+        serverUrl: 'http://host/l',
+        username: 'u2',
+      },
+    ]);
+  });
 });

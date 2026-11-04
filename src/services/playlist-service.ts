@@ -96,6 +96,10 @@ export interface LiveCategoryNotice {
 
 interface PlaylistRefreshOptions {
   preserveOnFailure?: boolean;
+  // Fetch timeout in ms. Default 60000; initial load uses a shorter value so
+  // the playlist fetch cannot exceed the 15s app init watchdog on webOS 3.9,
+  // where all HTTP routes through the bundled service's Luna fetch_url.
+  timeoutMs?: number;
 }
 
 function usableDirectSource(value: string): string {
@@ -289,7 +293,10 @@ class PlaylistServiceImpl {
     this.searchIndexedChannelCount = -1;
   }
 
-  async load(onProgress?: (progress: PlaylistLoadProgress) => void): Promise<Channel[]> {
+  async load(
+    onProgress?: (progress: PlaylistLoadProgress) => void,
+    options: PlaylistRefreshOptions = {},
+  ): Promise<Channel[]> {
     const enabledSources = StorageService.getPlaylists().filter(isSourceEnabled);
     const enabledIds = new Set(enabledSources.map(source => source.id));
     debugSetPlaylists(enabledSources.map(p => ({ name: p.name || p.url, source: p.source, id: p.id, enabled: p.enabled, hasXtream: !!p.xtream })));
@@ -333,7 +340,7 @@ class PlaylistServiceImpl {
       return this.channels;
     }
     log.info('Cache miss — refreshing from network');
-    const result = await this.refresh(onProgress);
+    const result = await this.refresh(onProgress, options);
     debugSetLoadEnd({ fromCache: false, channels: result.length });
     if (result.length === 0 && enabledSources.length > 0) {
       throw new Error(
@@ -485,7 +492,7 @@ class PlaylistServiceImpl {
         try {
           const loaded = await fetchAndParseM3U(
             fetchUrl,
-            60000,
+            options.timeoutMs ?? 60000,
             xtreamCatalogAvailable ? xtreamReferences : undefined,
             xtreamCredentials?.baseUrl,
             (progress: M3ULoadProgress) => {

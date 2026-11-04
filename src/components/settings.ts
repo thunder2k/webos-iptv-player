@@ -2154,7 +2154,7 @@ export class Settings {
     const rect = el.getBoundingClientRect();
     let best: HTMLElement | null = null;
     let bestScore = Infinity;
-    for (const candidate of group.querySelectorAll<HTMLElement>('[data-focusable]')) {
+    for (const candidate of Array.from(group.querySelectorAll<HTMLElement>('[data-focusable]'))) {
       if (candidate === el) continue;
       const other = candidate.getBoundingClientRect();
       const overlap = Math.min(rect.bottom, other.bottom) - Math.max(rect.top, other.top);
@@ -2836,10 +2836,20 @@ export class Settings {
 
     ReminderService.backfillSourceIds();
     // A re-pointed account loses its old snapshot on save; keep the one its picker just reviewed.
-    if (StorageService.setPlaylists(nextSources)) {
-      for (const [reviewedId, reviewed] of reviewedSnapshots) {
-        StorageService.setLiveCategorySnapshot(reviewedId, reviewed);
-      }
+    // If the playlist write failed (e.g. localStorage quota on webOS 3.9), abort before
+    // onSave() so the user isn't navigated away with unsaved changes.
+    const playlistsSaved = StorageService.setPlaylists(nextSources);
+    if (!playlistsSaved) {
+      log.error(
+        'Failed to persist playlists on settings save',
+        'event=settings.save.playlists.failed',
+        'operation=save',
+      );
+      showToast(t('app.saveFailed'));
+      return;
+    }
+    for (const [reviewedId, reviewed] of reviewedSnapshots) {
+      StorageService.setLiveCategorySnapshot(reviewedId, reviewed);
     }
 
     const previousManualEpgSources = StorageService.getManualEpgSources();

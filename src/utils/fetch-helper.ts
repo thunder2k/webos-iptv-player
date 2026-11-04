@@ -44,7 +44,7 @@ export async function fetchWithTimeout(
   if (!supportsFetch) {
     // webOS 3.9 has no fetch or XMLHttpRequest — route through the bundled
     // service's Node.js HTTP client via Luna.
-    return fetchViaLuna(url, timeout) as unknown as Response;
+    return fetchViaLuna(url, { method: options.method, body: options.body as string, timeout }) as unknown as Response;
   }
   const controller = createAbortController();
   const timer = setTimeout(() => controller?.abort(), timeout);
@@ -71,7 +71,7 @@ export async function fetchWithTimeout(
   // Native fetch failed entirely (e.g. blocked on local addresses). Fall back to
   // the bundled service via Luna if it is available.
   if (isLunaAvailable()) {
-    return fetchViaLuna(url, timeout) as unknown as Response;
+    return fetchViaLuna(url, { method: options.method, body: options.body as string, timeout }) as unknown as Response;
   }
   throw nativeError;
 }
@@ -314,7 +314,7 @@ export async function fetchWithRetry(
   timeout = 30000
 ): Promise<Response> {
   if (typeof fetch === 'undefined') {
-    return fetchViaLuna(url, timeout) as unknown as Response;
+    return fetchViaLuna(url, { method: options.method, body: options.body as string, timeout }) as unknown as Response;
   }
   let lastError: Error | undefined;
   for (let i = 0; i <= retries; i++) {

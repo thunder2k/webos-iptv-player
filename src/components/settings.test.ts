@@ -282,6 +282,7 @@ beforeEach(() => {
     assrt: { apiKey: '' },
   };
   vi.clearAllMocks();
+  storageMock.setPlaylists.mockReturnValue(true);
   document.body.innerHTML = '';
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -671,6 +672,30 @@ describe('Settings.render', () => {
 
     expect(swatches[0].classList.contains('focused')).toBe(false);
     expect(container.querySelector('.settings-nav-item.focused')).not.toBeNull();
+  });
+
+  it('leftPeer does not throw when querySelectorAll returns a non-iterable (Chromium 38 NodeList)', () => {
+    settings.render();
+
+    const swatches = container.querySelectorAll<HTMLElement>('.theme-swatch');
+    expect(swatches.length).toBeGreaterThan(1);
+    settings.nav.focus(swatches[1]!);
+
+    // Simulate Chromium 38: NodeList has no Symbol.iterator, so for...of
+    // over querySelectorAll results throws "Invalid attempt to iterate
+    // non-iterable instance". leftPeer must use Array.from() instead.
+    const originalQSA = Element.prototype.querySelectorAll;
+    Element.prototype.querySelectorAll = function stub(this: Element): HTMLElement[] {
+      const result = originalQSA.call(this, '[data-focusable]');
+      const like: Record<number, HTMLElement> & { length: number } = { length: result.length };
+      for (let i = 0; i < result.length; i++) like[i] = result[i];
+      return like as unknown as NodeListOf<HTMLElement>;
+    };
+    try {
+      expect(() => settings.handleAction('left')).not.toThrow();
+    } finally {
+      Element.prototype.querySelectorAll = originalQSA;
+    }
   });
 
   it('shows and restores the empty hint for manual EPG sources', () => {
@@ -1113,6 +1138,54 @@ describe('Settings editing', () => {
     const saved = storageMock.setPlaylists.mock.calls.at(-1)![0] as { id: string; name: string }[];
     expect(saved.map(p => p.name)).toEqual(['Playlist 1', 'Playlist 2', 'Playlist 4', 'Playlist 5']);
     expect(saved.map(p => p.id)).toEqual([idBefore[0], idBefore[1], idBefore[3], idBefore[4]]);
+  });
+
+  it('persists removal of the second playlist on save', () => {
+    // Reproduces the user report: two pre-existing playlists, remove the
+    // second, click save — the removed playlist must not come back on restart.
+    state.playlists = [
+      { id: 'pl-1', name: 'P1', url: 'http://a', source: 'url' },
+      { id: 'pl-2', name: 'P2', url: 'http://b', source: 'url' },
+    ];
+    settings.render();
+    expect(container.querySelectorAll('#playlist-entries .settings-row:not(.playlist-header-row)'))
+      .toHaveLength(2);
+
+    const removeButtons = container.querySelectorAll<HTMLElement>('.remove-playlist');
+    expect(removeButtons).toHaveLength(2);
+    removeButtons[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(container.querySelectorAll('#playlist-entries .settings-row:not(.playlist-header-row)'))
+      .toHaveLength(1);
+
+    click('#save-settings');
+
+    const saved = storageMock.setPlaylists.mock.calls.at(-1)![0] as { id: string; name: string }[];
+    expect(saved.map(p => p.id)).toEqual(['pl-1']);
+    expect(saved.map(p => p.name)).toEqual(['P1']);
+  });
+
+  it('does not navigate away when playlist save fails', () => {
+    // Regression: if StorageService.setPlaylists returns false (write failure,
+    // e.g. localStorage quota on webOS 3.9), save() must not call onSave()
+    // so the user isn't navigated away with unsaved changes that silently
+    // revert on restart.
+    storageMock.setPlaylists.mockReturnValue(false);
+    state.playlists = [
+      { id: 'pl-1', name: 'P1', url: 'http://a', source: 'url' },
+      { id: 'pl-2', name: 'P2', url: 'http://b', source: 'url' },
+    ];
+    settings.render();
+
+    const removeButtons = container.querySelectorAll<HTMLElement>('.remove-playlist');
+    removeButtons[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    click('#save-settings');
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(storageMock.setPlaylists).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: 'pl-1' })]),
+    );
   });
 
   it('removes the row whose button was clicked, even after edits churn the row order', () => {

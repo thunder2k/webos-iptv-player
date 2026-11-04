@@ -952,6 +952,8 @@ class App {
 
       const loadingText = $('#loading-text');
       if (loadingText) loadingText.textContent = `${t('app.loadingChannels')} v${CONFIG.VERSION}`;
+      log.info('Initial playlist load with shortened timeout for watchdog',
+        'event=playlist.initial.load.shortened', 'timeoutMs=8000');
       let lastProgressAt = 0;
       await PlaylistService.load(progress => {
         if (!loadingText) return;
@@ -962,7 +964,7 @@ class App {
           processed: progress.channelsProcessed,
           kept: progress.channelsKept,
         });
-      });
+      }, { timeoutMs: 8000 });
       this.player.syncCurrentIndex();
       await ChannelHealthService.initialize();
       log.info('Channels loaded:', PlaylistService.channels.length,

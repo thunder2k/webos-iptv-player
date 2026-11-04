@@ -29,8 +29,9 @@ type LunaMsg = {
   // cleanup. (msg.cancel() exists too but is a *server-side* trigger taking
   // no arguments, not a callback-registering API.)
   on?: (event: 'cancel', listener: () => void) => void;
-  // Parameters passed in the Luna request body (JSON), e.g. { url: "..." }.
-  payload?: { url?: string };
+  // Parameters passed in the Luna request body (JSON), e.g. { url: "..." }
+  // or { url, method: "PUT", body: "{...}" } for fetch_url.
+  payload?: { url?: string; method?: string; body?: string };
 };
 
 // Non-webOS fallback (e.g. local testing): start the HTTP server directly with
@@ -175,12 +176,15 @@ export function registerLanService(service: LunaService, dataDir: string): void 
     msg.respond({ subscribed: !!msg.isSubscription });
   });
 
-  // fetch_url — server-side HTTP GET used by the app's fetchViaLuna fallback
-  // when fetch() is unavailable (e.g. in Web Workers on webOS 3.9). The app
-  // calls luna://<serviceId>/fetch_url with { url } and expects { ok, status,
-  // statusText, body } in response.
+  // fetch_url — server-side HTTP client used by the app's fetchViaLuna fallback
+  // when fetch() is unavailable (e.g. on webOS 3.9). The app calls
+  // luna://<serviceId>/fetch_url with { url, method?, body? } and expects
+  // { ok, status, statusText, body } in response. Supports GET (default) plus
+  // any method with an optional request body (PUT, DELETE, …).
   service.register('fetch_url', (msg) => {
     const url = msg.payload && msg.payload.url;
+    const method = (msg.payload && msg.payload.method) || 'GET';
+    const requestBody = msg.payload && msg.payload.body;
     if (typeof url !== 'string' || url.length === 0) {
       msg.respond({ ok: false, status: 400, statusText: 'Bad Request', body: null, error: 'Missing url parameter' });
       return;
@@ -200,25 +204,27 @@ export function registerLanService(service: LunaService, dataDir: string): void 
       host: parsed.hostname,
       port: parsed.port ? Number(parsed.port) : (isHttps ? 443 : 80),
       path: parsed.path || '/',
-      method: 'GET',
+      method,
     };
 
     let settled = false;
     const req = client.request(options, (res: http.IncomingMessage) => {
       if (settled) return;
       settled = true;
-      let body = '';
+      let responseBody = '';
       res.setEncoding('utf8');
-      res.on('data', (chunk: string) => { body += chunk; });
+      res.on('data', (chunk: string) => { responseBody += chunk; });
       res.on('end', () => {
         msg.respond({
           ok: (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
           status: res.statusCode ?? 0,
           statusText: res.statusMessage ?? '',
-          body: body,
+          body: responseBody,
         });
       });
     });
+
+    if (requestBody) req.write(requestBody);
 
     req.on('error', (e: Error) => {
       if (settled) return;

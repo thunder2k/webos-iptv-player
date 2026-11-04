@@ -224,7 +224,7 @@ export async function fetchAndParseM3UInWorker(
       // Fall back to the bundled service's Luna HTTP client, which proxies
       // server-side via Node.js and avoids browser CORS/worker restrictions.
       try {
-        const lunaResponse = await fetchViaLuna(request.url, request.timeout);
+        const lunaResponse = await fetchViaLuna(request.url, { timeout: request.timeout });
         if (!lunaResponse.ok) throw new Error(`HTTP ${lunaResponse.status}: ${lunaResponse.statusText}`);
         const bytes = new TextEncoder().encode(await lunaResponse.text());
         inputBytes = bytes.length;
