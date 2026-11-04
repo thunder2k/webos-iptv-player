@@ -3002,7 +3002,16 @@ export class Settings {
     // finishBundledServiceInit() calls refreshSetupInfo() again once the
     // bundled service has started and setServicePort() has run.
     if (!serviceBase()) return;
-    const info = await SetupClient.getInfo();
+
+    // Retry getInfo() a few times — the bundled service may have just started
+    // and its HTTP listener may not be accepting connections yet.
+    let info: Awaited<ReturnType<typeof SetupClient.getInfo>> | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      info = await SetupClient.getInfo();
+      if (info) break;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
     // Re-resolve in case the user navigated away or settings re-rendered.
     const target = $('#setup-info', this.container);
     if (!target) return;

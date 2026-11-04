@@ -2117,7 +2117,7 @@ describe('Settings uploads section', () => {
     // Port is known but the HTTP request fails -> service unreachable.
     (serviceBase as ReturnType<typeof vi.fn>).mockReturnValue('http://127.0.0.1:8890');
     settings.render();
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 1500));
     expect(container.querySelector('#setup-info')!.textContent)
       .toContain('The setup service is currently unavailable.');
   });
